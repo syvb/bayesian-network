@@ -42,6 +42,16 @@
   let softKind = localStorage.getItem(SOFT_KIND_KEY) === "probabilities" ? "probabilities" : "likelihoods";
   const isTarget = (v) => !!(v && v.target);
 
+  // ?view opens the viewer: full screen probabilities without the editing tools, for sharing a
+  // scenario. Readers can set evidence; nothing they do is saved until they open the editor.
+  let viewer = new URLSearchParams(location.search).has("view");
+  let viewerEvidenceChanged = false;
+  if (viewer) {
+    showProbs = true;
+    document.body.classList.add("viewer");
+    if (/[?&]src=/.test(location.search) || location.hash.startsWith("#net=")) document.body.classList.add("viewer-loading");
+  }
+
   // ------------------------------------------------------------ state & history
 
   let netId = null; // the id of the network being edited
@@ -226,6 +236,7 @@
   }
 
   function save() {
+    if (viewer) return;
     if (unsaved) { updateNetworkButton(); return; }
     store(netKey(netId), JSON.stringify(net));
     updateEntry(netId, { name: net.name, nodes: net.nodes.length, updated: Date.now() });
@@ -518,6 +529,7 @@
   }
 
   function saveEvidence() {
+    if (viewer) { viewerEvidenceChanged = true; return; }
     if (unsaved) {
       if (unsaved.importing) return;
       saveLinkedNetwork(); // stores the evidence too
@@ -791,6 +803,13 @@
     const port = e.target.closest("[data-port]");
     const nodeEl = e.target.closest("[data-node]");
     const arcEl = e.target.closest(".arc");
+    if (viewer) {
+      // The viewer only pans, and a click on a state sets evidence.
+      const st = showProbs && nodeEl && e.target.closest("[data-state]");
+      drag = { mode: "pan", sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y, moved: false, state: st ? { id: +nodeEl.dataset.node, s: +st.dataset.state } : null };
+      svg.setPointerCapture(e.pointerId);
+      return;
+    }
     if (e.button === 1) {
       drag = { mode: "pan", sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y, moved: false };
     } else if (port || (nodeEl && e.shiftKey)) {
@@ -864,7 +883,10 @@
     const d = drag;
     drag = null;
     svg.classList.remove("panning");
-    if (d.mode === "pan" && !d.moved) select([]);
+    if (d.mode === "pan" && !d.moved && d.state) {
+      if (softMode) openSoftEditor(d.state.id, d.state.s);
+      else toggleEvidence(d.state.id, d.state.s);
+    } else if (d.mode === "pan" && !d.moved) select([]);
     else if (d.mode === "move" && d.moved) { save(); render(); }
     else if (d.mode === "move" && d.state) {
       if (softMode) openSoftEditor(d.state.id, d.state.s);
@@ -885,6 +907,7 @@
   svg.addEventListener("pointercancel", endDrag);
 
   svg.addEventListener("dblclick", (e) => {
+    if (viewer) return;
     // The canvas is re-rendered on every click, so look up what is under the pointer now.
     const el = document.elementFromPoint(e.clientX, e.clientY);
     const nodeEl = el && el.closest("[data-node]");
@@ -975,6 +998,10 @@
     const inField = e.target.closest("input, textarea, select, dialog");
     const inGrid = e.target.closest(".cpt-scroll");
     const mod = e.ctrlKey || e.metaKey;
+    if (viewer) {
+      if (!inField && !mod && (e.key === "f" || e.key === "F")) fit();
+      return;
+    }
     if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); downloadPython(); return; }
     if (inGrid && !inField && mod && !cpt.isEditing()) {
       // the CPT grid handles its own keys, but undo/redo stay global
@@ -1424,7 +1451,7 @@
     const summary = `Imported ${net.name ? `“${net.name}”: ` : ""}${plural(net.nodes.length, "variable")}, ${plural(net.arcs.length, "arc")}` +
       (evCount ? `, evidence on ${plural(evCount, "variable")}` : "");
     showImportResult({ summary, warnings });
-    toast(summary + (warnings.length ? ` with ${plural(warnings.length, "warning")}` : ""));
+    if (!viewer) toast(summary + (warnings.length ? ` with ${plural(warnings.length, "warning")}` : ""));
     return true;
   }
 
@@ -1481,15 +1508,15 @@
   const fromBase64Url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
   const pipe = async (bytes, stream) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
 
-  async function shareLink() {
+  async function shareLink(asViewer = false) {
     if (!net.nodes.length) { toast("The network is empty"); return; }
     const packed = await pipe(new TextEncoder().encode(exportCode()), new CompressionStream("deflate-raw"));
     const hash = "#net=" + toBase64Url(packed);
-    const url = location.href.replace(/[?#].*$/, "") + hash;
+    const url = location.href.replace(/[?#].*$/, "") + (asViewer ? "?view" : "") + hash;
     try {
       await navigator.clipboard.writeText(url);
       const long = url.length > 8000 && BNGist.available() ? ". That's long: Share ▾ › Publish to GitHub Gist makes a short one" : "";
-      toast(`Copied a link with the network in it (${url.length.toLocaleString()} characters)${long}`);
+      toast(`Copied a ${asViewer ? "viewer " : ""}link with the network in it (${url.length.toLocaleString()} characters)${long}`);
     } catch {
       prompt("Copy this link:", url);
     }
@@ -1542,6 +1569,7 @@
     publish.disabled = !!state.busy;
     publish.textContent = (BNGist.signedIn() ? "Publish" : "Sign in with GitHub and publish") + (state.error ? " again" : "");
     $("#gist-copy").hidden = !done;
+    $("#gist-copy-viewer").hidden = !done;
     $("#gist-close").textContent = done ? "Close" : "Cancel";
     $("#gist-sign-out").hidden = !BNGist.signedIn();
   }
@@ -1604,7 +1632,7 @@
   // again, until it's changed: then saveLinkedNetwork stores it like any other network.
   async function importLink(file, source) {
     const before = netId;
-    const beforeBlank = netId && !unsaved && !net.nodes.length && !undoStack.length && !redoStack.length;
+    const beforeBlank = !viewer && netId && !unsaved && !net.nodes.length && !undoStack.length && !redoStack.length;
     hideSoftEditor();
     importBefore = null;
     if (unsaved) discardLinkedNetwork();
@@ -1621,6 +1649,12 @@
     refreshNetwork();
     const ok = await importFile(file);
     unsaved.importing = false;
+    if (viewer) {
+      // The viewer doesn't show import details: a failure becomes a short message.
+      const failed = !ok && $("#import-result p")?.textContent;
+      $("#import-dialog").close();
+      if (failed) toast(failed.replace("Nothing was imported.", "Couldn't open the linked network:"));
+    }
     if (!ok) {
       // Nothing was imported: go back to the network that was open.
       discardLinkedNetwork();
@@ -1635,7 +1669,8 @@
     importBefore = null;
     $("#import-undo").hidden = true;
     updateButtons();
-    toast(`Opened “${net.name}” from the link (${net.nodes.length} variables). It's saved to your networks once you change it.`);
+    updateNetworkButton();
+    if (!viewer) toast(`Opened “${net.name}” from the link (${net.nodes.length} variables). It's saved to your networks once you change it.`);
   }
 
   // Editing the code after an import offers to import it again.
@@ -1644,10 +1679,11 @@
   $("#import-file").addEventListener("change", (e) => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ""; });
 
   const wrap = $("#canvas-wrap");
-  wrap.addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); wrap.classList.add("dropping"); } });
+  wrap.addEventListener("dragover", (e) => { if (!viewer && e.dataTransfer.types.includes("Files")) { e.preventDefault(); wrap.classList.add("dropping"); } });
   wrap.addEventListener("dragleave", () => wrap.classList.remove("dropping"));
   wrap.addEventListener("drop", (e) => {
     e.preventDefault();
+    if (viewer) return;
     wrap.classList.remove("dropping");
     if (e.dataTransfer.files[0]) importFile(e.dataTransfer.files[0]);
   });
@@ -1665,8 +1701,11 @@
     demo: () => toggleDemoMenu(),
     probs: toggleProbs,
     export: openExport,
-    share: () => (BNGist.available() ? toggleShareMenu() : shareLink()),
+    share: () => toggleShareMenu(),
     "copy-link": () => { toggleShareMenu(false); shareLink(); },
+    "copy-viewer-link": () => { toggleShareMenu(false); shareLink(true); },
+    "open-editor": openEditor,
+    "gist-copy-viewer": async () => { await navigator.clipboard.writeText($("#gist-link").value.replace("?src=", "?view&src=")); toast("Copied the viewer link"); },
     gist: () => { toggleShareMenu(false); openGist(); },
     "gist-publish": () => publishGist(),
     "gist-copy": async () => { await navigator.clipboard.writeText($("#gist-link").value); toast("Copied the link"); },
@@ -1759,16 +1798,11 @@
   });
   function updateNetworkButton() {
     $("#net-switch-name").textContent = net.name || "Untitled";
+    $("#viewer-title").textContent = net.name || "Untitled";
     document.querySelector('[data-action="networks"]').title = `${net.name || "Untitled"}: switch between your saved networks, or start a new one`;
   }
   const toggleShareMenu = menu($("#share-menu"), "share");
-  if (BNGist.available()) {
-    const b = document.querySelector('[data-action="share"]');
-    b.textContent = "Share ▾";
-    b.title = "Share the network by link";
-    b.setAttribute("aria-haspopup", "menu");
-    b.setAttribute("aria-expanded", "false");
-  }
+  document.querySelector('[data-action="gist"]').hidden = !BNGist.available();
   demoMenu.addEventListener("click", (e) => {
     const b = e.target.closest("[data-demo]");
     if (!b) return;
@@ -1805,8 +1839,26 @@
   updateButtons();
   requestAnimationFrame(fit);
   finishGistSignIn();
-  loadFromLink();
-  loadFromHash();
+  Promise.all([loadFromLink(), loadFromHash()]).finally(() => {
+    document.body.classList.remove("viewer-loading");
+    if (viewer) fit();
+  });
+
+  // Leaves the viewer for the full editor, keeping the evidence the reader set. From here the
+  // network follows the editor's usual rules (a linked one is saved once it's changed).
+  function openEditor() {
+    viewer = false;
+    document.body.classList.remove("viewer");
+    const url = new URL(location.href);
+    url.searchParams.delete("view");
+    history.replaceState(null, "", url.href.replace("?#", "#").replace(/\?$/, ""));
+    if (viewerEvidenceChanged) saveEvidence();
+    render();
+    renderPanel();
+    cpt.render(cptNodeId());
+    updateButtons();
+    requestAnimationFrame(fit);
+  }
 
   // Exposed for debugging from the console.
   globalThis.bnEditor = { get net() { return net; }, select, render };

@@ -614,3 +614,15 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 .chip.drop-after { box-shadow: 3px 0 0 var(--accent); }
 .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .chips-note { margin: 4px 0 0; }
+
+.menu button[hidden] { display: none; }
+
+/* The viewer (?view): the canvas with probabilities, full screen, and no editing tools. */
+.viewer-only { display: none; }
+body.viewer .viewer-only { display: revert; }
+body.viewer .toolbar > :not(.brand, .viewer-only, .grow, [data-action="fit"]) { display: none; }
+body.viewer #viewer-title { font-weight: 600; margin-right: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+body.viewer #side, body.viewer #cpt-dock { display: none; }
+body.viewer .node .port { display: none; }
+body.viewer .node { cursor: default; }
+body.viewer-loading #canvas-wrap { visibility: hidden; }
