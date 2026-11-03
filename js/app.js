@@ -176,7 +176,8 @@
       x0 = Math.min(x0, n.x - w / 2); x1 = Math.max(x1, n.x + w / 2);
       y0 = Math.min(y0, n.y - h / 2); y1 = Math.max(y1, n.y + h / 2 + 10);
     }
-    const pad = 50, top = showProbs ? 50 : 0; // room for the evidence bar
+    const pad = 24; // leave room for the evidence bar, with half a pad below it
+    const top = evidenceBar.hidden ? 0 : evidenceBar.getBoundingClientRect().bottom - r.top - pad / 2;
     const k = Math.min(1.4, (r.width - 2 * pad) / (x1 - x0), (r.height - 2 * pad - top) / (y1 - y0));
     view = { k, x: r.width / 2 - ((x0 + x1) / 2) * k, y: (r.height + top) / 2 - ((y0 + y1) / 2) * k };
     applyView();
