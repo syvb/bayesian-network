@@ -52,11 +52,11 @@ The data model follows pyAgrum: `LabelizedVariable`, `RangeVariable`, `IntegerVa
 import pyagrum as gum
 
 bn = gum.BayesNet("Wet grass")
-bn.add(gum.LabelizedVariable("rain", "", ["no", "yes"]))
+bn.add(gum.LabelizedVariable("rain", "", ["yes", "no"]))
 ...
 bn.addArc("rain", "wet_grass")
-bn.cpt("rain").fillWith([0.8, 0.2])
-bn.cpt("wet_grass")[{"sprinkler": "off", "rain": "no"}] = [1, 0]
+bn.cpt("rain").fillWith([0.2, 0.8])
+bn.cpt("wet_grass")[{"sprinkler": "off", "rain": "no"}] = [0, 1]
 # bn-editor-layout: {...}
 ```
 

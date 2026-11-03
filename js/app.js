@@ -550,7 +550,7 @@
     const name = M.uniqueName(net, opts.name || "X");
     let node;
     change(() => {
-      node = M.addNode(net, { name, labels: ["no", "yes"], x: p.x, y: p.y });
+      node = M.addNode(net, { name, labels: ["yes", "no"], x: p.x, y: p.y });
       if (opts.parent) M.addArc(net, opts.parent, node.id);
     });
     select([node.id]);
