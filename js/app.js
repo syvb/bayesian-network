@@ -476,10 +476,12 @@
       const tip = !showProbs ? "" : softMode ? "\nClick a state to enter soft evidence for this node" : "\nClick a state to set or clear it as evidence";
       parts.push(
         `<g class="${classes.join(" ")}" data-node="${n.id}" transform="translate(${n.x},${n.y})">` +
-          `<title>${esc(n.name)}${n.description ? " — " + esc(n.description) : ""}\n${esc(n.labels.join(", "))}${bad ? "\nCPT rows do not sum to 1" : ""}${tip}</title>` +
+          // A node with a description gets the hover card instead of the browser's slower tooltip.
+          (n.description ? "" : `<title>${esc(n.name)}\n${esc(n.labels.join(", "))}${bad ? "\nCPT rows do not sum to 1" : ""}${tip}</title>`) +
           `<rect class="body" x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}" rx="9"/>` +
           content +
           (bad ? `<circle class="bad" cx="${w / 2 - 8}" cy="${-h / 2 + 8}" r="4"/>` : "") +
+          (n.description ? `<g class="info" transform="translate(${-w / 2 + 10},${-h / 2 + 10})"><circle r="6"/><text text-anchor="middle" y="3.5">i</text></g>` : "") +
           `<circle class="port" data-port="${n.id}" cx="0" cy="${h / 2}" r="6"/>` +
         `</g>`
       );
@@ -840,6 +842,30 @@
     }
     svg.setPointerCapture(e.pointerId);
   });
+
+  // Hovering a node that has a description shows it in a card under the node.
+  const nodeTip = $("#node-tip");
+  let tipId = null;
+  function showNodeTip(id) {
+    const n = id === null ? null : M.getNode(net, id);
+    if (!n || !n.description || drag) { nodeTip.hidden = true; tipId = null; return; }
+    if (tipId !== id) {
+      const hint = !showProbs ? "" : softMode ? "Click a state to enter soft evidence" : "Click a state to set or clear it as evidence";
+      nodeTip.innerHTML = `<b>${esc(n.name)}</b><p>${esc(n.description)}</p>` + (M.badRows(n).length ? `<p class="warn">CPT rows do not sum to 1</p>` : "") + (hint ? `<p class="muted">${hint}</p>` : "");
+      tipId = id;
+    }
+    nodeTip.hidden = false;
+    const { h } = nodeSize(n), wrapW = svg.clientWidth, tw = nodeTip.offsetWidth, th = nodeTip.offsetHeight;
+    const cx = view.x + n.x * view.k;
+    let top = view.y + (n.y + h / 2) * view.k + 8;
+    if (top + th > svg.clientHeight - 4) top = view.y + (n.y - h / 2) * view.k - th - 8;
+    nodeTip.style.left = Math.max(4, Math.min(wrapW - tw - 4, cx - tw / 2)) + "px";
+    nodeTip.style.top = Math.max(4, top) + "px";
+  }
+  svg.addEventListener("pointerover", (e) => { const el = e.target.closest("[data-node]"); showNodeTip(el ? +el.dataset.node : null); });
+  svg.addEventListener("pointerleave", () => showNodeTip(null));
+  svg.addEventListener("pointerdown", () => showNodeTip(null));
+  svg.addEventListener("wheel", () => showNodeTip(null), { passive: true });
 
   svg.addEventListener("pointermove", (e) => {
     lastPointer = toWorld(e);
