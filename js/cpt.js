@@ -38,6 +38,8 @@
     let lastAdjust = null; // {offset, states}: cells changed by the last balancing, highlighted once
     let mouseSelecting = false;
     let barDrag = null;
+    let hot = null; // {r0, r1}: rows under the pointer (or being dragged), highlighted across the table
+    let curParents = [];
 
     dock.innerHTML = `<div class="dock-resize" title="Drag to resize"></div><header class="dock-head"></header><div class="cpt-scroll" tabindex="0"></div>
       <div id="balance-help" class="help-popover" popover>
@@ -99,7 +101,9 @@
         sel = rows.length ? { ar: clampR(sel.ar), fr: clampR(sel.fr), ac: clampC(sel.ac), fc: clampC(sel.fc) } : null;
       }
       head.innerHTML = headerHTML(n, parents, all.length);
+      curParents = parents;
       grid.innerHTML = tableHTML(n, parents);
+      paintHot();
       showAdjustment();
       paintSelection();
     }
@@ -177,11 +181,56 @@
           ? `<td class="pcell" rowspan="${spans[k][r]}" data-r="${r}" data-span="${spans[k][r]}" title="Select ${spans[k][r] > 1 ? "these rows" : "this row"}">${esc(p.labels[row.idx[k]])}</td>`
           : "").join("");
         const cells = vals.map((v, s) => `<td class="cell" data-r="${r}" data-c="${s}" title="${esc(M.fmtNum(v))}">${fmt(v)}</td>`).join("");
-        return `<tr data-r="${r}"${rowBad(vals) ? ' class="bad"' : ""}>${pcells}<td class="bar-cell"><div class="bar" data-row="${r}">${barHTML(vals)}</div></td>${cells}<td class="status">${statusHTML(vals)}</td></tr>`;
+        const cls = [rowBad(vals) && "bad", r > 0 && parents.length > 1 && spans[0][r] && "group-start", r % 2 && "odd"].filter(Boolean).join(" ");
+        return `<tr data-r="${r}"${cls ? ` class="${cls}"` : ""}>${pcells}<td class="bar-cell"><div class="bar" data-row="${r}">${barHTML(vals)}</div></td>${cells}<td class="status">${statusHTML(vals)}</td></tr>`;
       }).join("");
       const more = rows.length > MAX_ROWS ? `<p class="dock-empty">Showing ${MAX_ROWS} of ${rows.length} rows. Use the filters in the parent columns to see the rest.</p>` : "";
       const none = !rows.length ? `<p class="dock-empty">No rows match the filters.</p>` : "";
       return `<table class="cpt-grid"><thead><tr>${headCells}</tr></thead><tbody>${body}</tbody></table>${more}${none}`;
+    }
+
+    // Highlights the hovered (or dragged) rows, including the merged parent cells they belong to.
+    function setHot(next) {
+      if (hot && next && hot.r0 === next.r0 && hot.r1 === next.r1) return;
+      hot = next;
+      paintHot();
+    }
+    function paintHot() {
+      grid.querySelectorAll(".hot").forEach((el) => el.classList.remove("hot"));
+      if (!hot) return;
+      for (let r = hot.r0; r <= hot.r1; r++) grid.querySelector(`tr[data-r="${r}"]`)?.classList.add("hot");
+      grid.querySelectorAll("td.pcell").forEach((td) => {
+        const a = +td.dataset.r, b = a + +td.dataset.span - 1;
+        if (a <= hot.r1 && b >= hot.r0) td.classList.add("hot");
+      });
+    }
+    grid.addEventListener("mouseover", (e) => {
+      if (barDrag) return;
+      const pcell = e.target.closest("td.pcell");
+      const tr = e.target.closest("tbody tr");
+      if (pcell) setHot({ r0: +pcell.dataset.r, r1: +pcell.dataset.r + +pcell.dataset.span - 1 });
+      else if (tr) setHot({ r0: +tr.dataset.r, r1: +tr.dataset.r });
+      else setHot(null);
+    });
+    grid.addEventListener("mouseleave", () => { if (!barDrag) setHot(null); });
+
+    // Floating label next to the pointer while dragging a divider: which row, and what changes.
+    const tip = document.createElement("div");
+    tip.className = "drag-tip";
+    tip.hidden = true;
+    document.body.appendChild(tip);
+    function showTip(e, d) {
+      const n = node(), row = rows[d.r];
+      const cond = curParents.length ? curParents.map((p, k) => `${esc(p.name)} = <b>${esc(p.labels[row.idx[k]])}</b>`).join(", ") : "No parents";
+      const now = rowVals(d.r);
+      const pct = (v) => +(v * 100).toFixed(1) + "%";
+      const change = [d.i, d.i + 1].map((s) => `<span><i class="sw" style="background:${color(s)[0]}"></i>${esc(n.labels[s])} ${pct(d.vals[s])} → <b>${pct(now[s])}</b></span>`).join("");
+      tip.innerHTML = `<div class="tip-cond">${cond}</div><div class="tip-change">${change}</div>`;
+      tip.hidden = false;
+      const x = Math.min(window.innerWidth - tip.offsetWidth - 8, e.clientX + 14);
+      const y = e.clientY - tip.offsetHeight - 14;
+      tip.style.left = x + "px";
+      tip.style.top = (y < 8 ? e.clientY + 18 : y) + "px";
     }
 
     // Briefly highlights the cells the last typed value rescaled.
@@ -507,6 +556,8 @@
       barDrag = { r, vals, cum, lo, hi, i: lo === hi ? lo : null, rect: barEl.getBoundingClientRect(), scale: Math.max(1, cum[cum.length - 1]), started: false };
       sel = { ar: r, ac: h, fr: r, fc: h };
       paintSelection();
+      setHot({ r0: r, r1: r });
+      grid.classList.add("dragging");
       grid.focus({ preventScroll: true });
       grid.setPointerCapture(e.pointerId);
     });
@@ -530,11 +581,14 @@
       opts.onLiveEdit();
       sel = { ar: d.r, ac: i, fr: d.r, fc: i };
       paintSelection();
+      showTip(e, d);
     });
     const endBarDrag = () => {
       if (!barDrag) return;
       const started = barDrag.started;
       barDrag = null;
+      tip.hidden = true;
+      grid.classList.remove("dragging");
       if (started) opts.afterDirectEdit();
     };
     grid.addEventListener("pointerup", endBarDrag);

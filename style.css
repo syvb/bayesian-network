@@ -247,7 +247,8 @@ table.cpt-grid { border-collapse: separate; border-spacing: 0; width: 100%; font
 }
 .cpt-grid th.pcol { border-right: 1px solid var(--border); }
 .cpt-grid th.pcol select { margin-top: 2px; font-size: 12px; padding: 0 2px; max-width: 120px; font-weight: normal; }
-.cpt-grid th.bar-h { width: 100%; min-width: 220px; cursor: pointer; }
+.cpt-grid th.bar-h { width: 340px; min-width: 220px; cursor: pointer; }
+.cpt-grid th.status-h { width: 100%; }
 .cpt-grid th.bar-h .muted { font-weight: normal; margin-left: 6px; }
 .cpt-grid th.state { text-align: right; min-width: 76px; cursor: pointer; }
 .cpt-grid th.state:hover, .cpt-grid th.bar-h:hover { color: var(--accent); }
@@ -262,7 +263,6 @@ table.cpt-grid { border-collapse: separate; border-spacing: 0; width: 100%; font
 .cpt-grid td.status { color: var(--danger); font-size: 12px; min-width: 70px; }
 .cpt-grid tr.bad td.cell, .cpt-grid tr.bad td.bar-cell { background-color: color-mix(in srgb, var(--danger) 8%, transparent); }
 .cpt-grid tr.bad td.cell.sel { background: var(--accent-soft); }
-.cpt-grid tbody tr:hover td.bar-cell { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 input.cell-edit {
   position: absolute;
   inset: 2px;
@@ -445,3 +445,29 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 .soft-row input[type=range] { width: 100%; accent-color: var(--observed); }
 .soft-row input[type=number] { width: 64px; text-align: right; }
 .soft-actions { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+
+/* ---------------------------------------------------------------- CPT row targeting */
+.cpt-grid td.bar-cell .bar { width: 340px; max-width: 100%; }
+.cpt-grid tbody tr.odd td:not(.pcell) { background-color: color-mix(in srgb, var(--text) 3%, transparent); }
+.cpt-grid tbody tr.group-start td, .cpt-grid tbody tr.group-start td.pcell { border-top: 2px solid color-mix(in srgb, var(--text) 25%, transparent); }
+.cpt-grid tbody tr.hot td:not(.pcell), .cpt-grid td.pcell.hot { background-color: color-mix(in srgb, var(--accent) 13%, transparent); }
+.cpt-grid td.pcell.hot { color: var(--accent); font-weight: 600; }
+.cpt-grid tbody tr.hot td.bar-cell { box-shadow: inset 3px 0 0 var(--accent); }
+.cpt-scroll.dragging tbody tr:not(.hot) td:not(.pcell), .cpt-scroll.dragging td.pcell:not(.hot) { opacity: 0.35; }
+.cpt-scroll.dragging, .cpt-scroll.dragging * { cursor: ew-resize !important; }
+.drag-tip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  padding: 5px 9px;
+  border-radius: 7px;
+  background: var(--text);
+  color: var(--surface);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
+  white-space: nowrap;
+}
+.drag-tip[hidden] { display: none; }
+.drag-tip .tip-change { display: flex; gap: 12px; margin-top: 2px; }
+.drag-tip .sw { margin-right: 4px; }
