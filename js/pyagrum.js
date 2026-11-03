@@ -307,7 +307,7 @@
           case "addArc": return fn(name, ([a, b]) => { this.arc(a, b); return null; });
           case "addArcs": return fn(name, ([pairs]) => { for (const pr of iterate(pairs)) { const [a, b] = iterate(pr); this.arc(a, b); } return null; });
           case "eraseArc": return fn(name, ([a, b]) => { M.removeArc(net, this.node(a).id, this.node(b).id); return null; });
-          case "reverseArc": return fn(name, ([a, b]) => { const err = M.reverseArcBayes(net, this.node(a).id, this.node(b).id); if (err) throw new PyError(err); return null; });
+          case "reverseArc": return fn(name, ([a, b]) => { const err = M.reverseArc(net, this.node(a).id, this.node(b).id); if (err) throw new PyError(err); return null; });
           case "erase": return fn(name, ([v]) => { const n = this.node(v); M.removeNode(net, n.id); this.pyIds[this.pyId(n)] = null; return null; });
           case "cpt": return fn(name, ([v]) => new PotHost(this, this.node(v)));
           case "idFromName": case "nodeId": return fn(name, ([v]) => this.pyId(this.node(v)));

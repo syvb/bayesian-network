@@ -229,18 +229,10 @@
     return wouldCycle(without, to, from) ? "That arc would create a cycle" : null;
   }
 
-  // Flips the arc; the child keeps its CPT for its remaining parents.
-  function reverseArc(net, from, to) {
-    const err = reversalError(net, from, to);
-    if (err) return err;
-    removeArc(net, from, to);
-    return addArc(net, to, from);
-  }
-
   // pyAgrum's bn.reverseArc: flips the arc and keeps the joint distribution, by giving each of the
   // two nodes the other's parents and recomputing both CPTs with Bayes' rule (Shachter 1986).
   // Parent order: existing parents first, new ones after (pyAgrum's order depends on its internals).
-  function reverseArcBayes(net, from, to) {
+  function reverseArc(net, from, to) {
     const err = reversalError(net, from, to);
     if (err) return err;
     const nf = getNode(net, from), nt = getNode(net, to);
@@ -368,7 +360,7 @@
 
   const api = {
     TYPES, fmtNum, labelsFor, createNetwork, getNode, nodeByName, parentsOf, childrenOf, card, uniqueName,
-    addNode, setDomain, uniformCpt, wouldCycle, hasArc, stateMap, restructure, addArc, removeArc, reverseArc, reverseArcBayes,
+    addNode, setDomain, uniformCpt, wouldCycle, hasArc, stateMap, restructure, addArc, removeArc, reverseArc,
     removeNode, updateDomain, cptRows, normalizeRow, normalizeCpt, randomizeCpt, uniformizeCpt, badRows,
     autoLayout, strides,
   };

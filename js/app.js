@@ -891,15 +891,18 @@
     panel.innerHTML = `
       <h2>Arc</h2>
       <p><span class="link" data-select="${f.id}">${esc(f.name)}</span> → <span class="link" data-select="${t.id}">${esc(t.name)}</span></p>
-      <p class="muted">Reversing keeps both CPTs' existing values: the node that gains a parent repeats its old distribution for every parent state, and the node that loses one keeps the rows for that parent's first state.</p>
+      <p class="muted">Reversing keeps every probability the same, as pyAgrum's <code>reverseArc</code> does: both CPTs are recomputed with Bayes' rule, and each node also gets the other's parents, which can add arcs.</p>
       <button data-act="reverse">Reverse</button> <button class="danger" data-act="delete">Delete</button>`;
     panel.querySelectorAll("[data-select]").forEach((el) => (el.onclick = () => select([+el.dataset.select])));
     panel.querySelector('[data-act="delete"]').onclick = deleteSelection;
     panel.querySelector('[data-act="reverse"]').onclick = () => {
       const a = selArc;
+      const arcs = net.arcs.length;
       const err = change(() => M.reverseArc(net, a.from, a.to));
-      if (err) toast(err);
-      else select([], { from: a.to, to: a.from });
+      if (err) { toast(err); return; }
+      select([], { from: a.to, to: a.from });
+      const added = net.arcs.length - arcs;
+      if (added) toast(`Reversed; added ${added} arc${added > 1 ? "s" : ""} so the probabilities stay the same`);
     };
   }
 
