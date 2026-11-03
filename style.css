@@ -419,3 +419,29 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
   background: color-mix(in srgb, var(--observed) 15%, transparent);
 }
 .ev-chip button.icon { font-size: 12px; }
+
+/* ---------------------------------------------------------------- soft evidence */
+.node.soft-observed rect.body { stroke: var(--observed); stroke-width: 2.5; stroke-dasharray: 6 3; }
+.node.soft-observed.selected rect.body { stroke: var(--accent); }
+#evidence-bar .sep { height: 18px; }
+.ev-chip.soft { cursor: pointer; background: transparent; border: 1px dashed var(--observed); }
+.ev-chip.soft:hover { background: color-mix(in srgb, var(--observed) 12%, transparent); }
+#soft-editor {
+  position: absolute;
+  z-index: 6;
+  width: 300px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
+  font-size: 13px;
+}
+#soft-editor[hidden] { display: none; }
+#soft-editor p { margin: 4px 0 8px; font-size: 12px; }
+.soft-head { display: flex; align-items: center; gap: 6px; }
+.soft-row { display: grid; grid-template-columns: 70px 1fr 64px; align-items: center; gap: 8px; margin: 4px 0; }
+.soft-row .slabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soft-row input[type=range] { width: 100%; accent-color: var(--observed); }
+.soft-row input[type=number] { width: 64px; text-align: right; }
+.soft-actions { display: flex; gap: 6px; align-items: center; margin-top: 8px; }

@@ -110,18 +110,23 @@
     return fs.reduce(multiply, makeFactor([], [], new Float64Array([1])));
   }
 
-  // evidence: Map(node id -> state index).
+  // evidence: Map(node id -> state index for hard evidence, or an array with one likelihood per
+  // state for soft evidence, as in pyAgrum's bn/ie.setEvidence({"x": [0.2, 0.8]})).
   // Returns {marginals: Map(id -> number[]), pEvidence} or {error}.
   function posteriors(net, evidence = new Map()) {
     try {
+      const hard = new Map(), soft = new Map();
+      for (const [id, v] of evidence) (typeof v === "number" ? hard : soft).set(id, v);
       const cptFactor = (id) => {
         const n = M.getNode(net, id);
         const vars = [id].concat(M.parentsOf(net, id));
         let f = makeFactor(vars, vars.map((v) => M.card(net, v)), Float64Array.from(n.cpt));
-        for (const [ev, s] of evidence) f = reduce(f, ev, s);
+        for (const [ev, s] of hard) f = reduce(f, ev, s);
         return f;
       };
-      const factorsFor = (ids) => [...ancestorsOf(net, [...ids, ...evidence.keys()])].map(cptFactor);
+      // Soft evidence multiplies its node's distribution by the likelihoods.
+      const likelihoods = [...soft].map(([id, lik]) => makeFactor([id], [lik.length], Float64Array.from(lik)));
+      const factorsFor = (ids) => [...ancestorsOf(net, [...ids, ...evidence.keys()])].map(cptFactor).concat(likelihoods);
 
       let pEvidence = 1;
       if (evidence.size) {
@@ -130,8 +135,8 @@
       }
       const marginals = new Map();
       for (const n of net.nodes) {
-        if (evidence.has(n.id)) {
-          marginals.set(n.id, n.labels.map((_, s) => (s === evidence.get(n.id) ? 1 : 0)));
+        if (hard.has(n.id)) {
+          marginals.set(n.id, n.labels.map((_, s) => (s === hard.get(n.id) ? 1 : 0)));
           continue;
         }
         const f = eliminate(factorsFor([n.id]), n.id);

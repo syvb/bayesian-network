@@ -33,6 +33,8 @@ With **Probabilities** on (toolbar button or `P`), every node shows the probabil
 
 Click a state in a node to observe it, e.g. "the grass is wet". Every other node then shows its probabilities given the evidence. Click the state again to clear it. The evidence bar at the top of the canvas lists what you've observed, shows P(evidence), and has **Clear all**. Impossible evidence (probability 0) is refused. Probabilities also update live while you edit CPTs.
 
+**Soft evidence** is off by default. Tick **Soft evidence** in the evidence bar, and clicking a state opens a small editor with a slider and number per state. There you enter likelihoods: how likely the observation is if the node is in each state. This is the same as pyAgrum's `setEvidence({"rain": [0.2, 0.8]})`. Only the ratios matter, and equal values mean no evidence. Soft evidence shows as a dashed chip, which you can click to edit, and a dashed node outline. Hard and soft evidence can be combined.
+
 Evidence belongs to the editor session, not the network: it isn't undone with `Ctrl+Z` and isn't exported.
 
 ## pyAgrum

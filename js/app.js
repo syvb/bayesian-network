@@ -4,6 +4,7 @@
   const STORAGE_KEY = "bn-editor-network";
   const EVIDENCE_KEY = "bn-editor-evidence";
   const PROBS_KEY = "bn-editor-show-probabilities";
+  const SOFT_KEY = "bn-editor-soft-evidence";
   const NODE_H = 50;
   // probability view: header, then one row per state with a bar
   const PROB_HEAD = 30, PROB_ROW = 18, PROB_BAR = 64, PROB_PCT = 44, PROB_LABEL_MAX = 110;
@@ -20,9 +21,13 @@
   let drag = null;
   let lastPointer = null; // world coordinates of the pointer, used by the N shortcut
   let showProbs = localStorage.getItem(PROBS_KEY) !== "0";
-  let evidence = new Map(); // node id -> observed state label (editor state, not part of undo)
+  // node id -> observed state label (hard evidence) or one likelihood per state (soft evidence).
+  // Editor state, not part of undo.
+  let evidence = new Map();
   try { evidence = new Map(JSON.parse(localStorage.getItem(EVIDENCE_KEY)) || []); } catch {}
   let inferenceCache = null;
+  let softMode = localStorage.getItem(SOFT_KEY) === "1";
+  let softId = null; // node whose soft evidence editor is open
 
   // ------------------------------------------------------------ state & history
 
@@ -176,6 +181,7 @@
     svg.style.backgroundSize = `${20 * view.k}px ${20 * view.k}px`;
     svg.style.backgroundPosition = `${view.x}px ${view.y}px`;
     if (!inline.hidden) positionInline();
+    positionSoftEditor();
   }
 
   // ------------------------------------------------------------ rendering
@@ -197,8 +203,8 @@
       const classes = ["node"];
       if (selNodes.has(n.id)) classes.push("selected");
       if (drag && drag.mode === "arc" && drag.target === n.id) classes.push("target");
-      const observed = inf && evidenceIndices().get(n.id);
-      if (observed !== undefined && observed !== null) classes.push("observed");
+      const observed = inf ? evidenceIndices().get(n.id) : undefined;
+      if (observed !== undefined) classes.push(Array.isArray(observed) ? "soft-observed" : "observed");
       const bad = M.badRows(n).length > 0;
       let content;
       if (inf) {
@@ -220,7 +226,7 @@
         content = `<text class="name" text-anchor="middle" y="-3">${esc(n.name)}</text>` +
           `<text class="states" text-anchor="middle" y="14">${esc(truncate(n.labels.join(" · "), "11px system-ui, sans-serif", w - 16))}</text>`;
       }
-      const tip = showProbs ? "\nClick a state to set or clear it as evidence" : "";
+      const tip = !showProbs ? "" : softMode ? "\nClick a state to enter soft evidence (likelihoods) for this node" : "\nClick a state to set or clear it as evidence";
       parts.push(
         `<g class="${classes.join(" ")}" data-node="${n.id}" transform="translate(${n.x},${n.y})">` +
           `<title>${esc(n.name)}${n.description ? " — " + esc(n.description) : ""}\n${esc(n.labels.join(", "))}${bad ? "\nCPT rows do not sum to 1" : ""}${tip}</title>` +
@@ -244,6 +250,7 @@
     }
     viewport.innerHTML = parts.join("");
     renderEvidenceBar(inf);
+    positionSoftEditor();
     if (!net.nodes.length) {
       viewport.innerHTML += `<text x="${(svg.clientWidth / 2 - view.x) / view.k}" y="${(svg.clientHeight / 2 - view.y) / view.k}" text-anchor="middle" fill="currentColor" opacity="0.45">Double-click anywhere to add a node, or load one from Demo</text>`;
     }
@@ -251,13 +258,19 @@
 
   // ------------------------------------------------------------ inference & evidence
 
-  // Evidence as node id -> state index, skipping entries whose node or state no longer exists.
+  // Evidence as node id -> state index (hard) or likelihood array (soft), skipping entries whose
+  // node or state no longer exists, or whose likelihoods no longer match the node's states.
   function evidenceIndices(labels = evidence) {
     const out = new Map();
-    for (const [id, label] of labels) {
+    for (const [id, v] of labels) {
       const n = M.getNode(net, id);
-      const s = n ? n.labels.indexOf(label) : -1;
-      if (s >= 0) out.set(id, s);
+      if (!n) continue;
+      if (Array.isArray(v)) {
+        if (v.length === n.labels.length && v.some((x) => x > 0)) out.set(id, v.slice());
+      } else {
+        const s = n.labels.indexOf(v);
+        if (s >= 0) out.set(id, s);
+      }
     }
     return out;
   }
@@ -268,7 +281,7 @@
   }
 
   function saveEvidence() {
-    localStorage.setItem(EVIDENCE_KEY, JSON.stringify([...evidenceIndices()].map(([id, s]) => [id, M.getNode(net, id).labels[s]])));
+    localStorage.setItem(EVIDENCE_KEY, JSON.stringify([...evidenceIndices()].map(([id, v]) => [id, Array.isArray(v) ? v : M.getNode(net, id).labels[v]])));
   }
 
   function setEvidence(next) {
@@ -290,6 +303,7 @@
   }
 
   function clearEvidence() {
+    hideSoftEditor();
     evidence = new Map();
     inferenceCache = null;
     saveEvidence();
@@ -309,24 +323,153 @@
     if (evidenceBar.hidden) return;
     const ev = evidenceIndices();
     const fmtP = (p) => (p >= 0.001 ? +p.toPrecision(3) : p.toExponential(2));
+    const toggle = `<label class="check" title="Off: clicking a state observes it for certain. On: clicking a state opens an editor for how likely the observation is under each of the node's states (likelihoods), as in pyAgrum's setEvidence({&quot;x&quot;: [0.2, 0.8]}).">` +
+      `<input type="checkbox" data-soft-mode${softMode ? " checked" : ""}> Soft evidence</label>`;
+    let body;
     if (inf.error) {
-      evidenceBar.innerHTML = `<span class="warn">${esc(inf.error)}</span>`;
+      body = `<span class="warn">${esc(inf.error)}</span>`;
     } else if (!ev.size) {
-      evidenceBar.innerHTML = `<span class="muted">Click a state in any node to observe it; every other node then shows its updated probabilities.</span>`;
+      body = `<span class="muted">${softMode
+        ? "Click a state in any node to enter soft evidence (likelihoods) for that node."
+        : "Click a state in any node to observe it; every other node then shows its updated probabilities."}</span>`;
     } else {
-      evidenceBar.innerHTML = `<span class="ev-label">Evidence</span>` +
-        [...ev].map(([id, s]) => { const n = M.getNode(net, id); return `<span class="ev-chip">${esc(n.name)} = ${esc(n.labels[s])}<button class="icon" data-clear-ev="${id}" title="Remove this evidence">✕</button></span>`; }).join("") +
+      const chip = ([id, v]) => {
+        const n = M.getNode(net, id);
+        if (!Array.isArray(v)) return `<span class="ev-chip">${esc(n.name)} = ${esc(n.labels[v])}<button class="icon" data-clear-ev="${id}" title="Remove this evidence">✕</button></span>`;
+        const lik = v.map((x) => +x.toPrecision(2)).join(" : ");
+        return `<span class="ev-chip soft" data-edit-ev="${id}" title="Soft evidence: likelihood of the observation for ${esc(n.labels.join(" : "))}. Click to edit.">${esc(n.name)} ≈ ${lik}<button class="icon" data-clear-ev="${id}" title="Remove this evidence">✕</button></span>`;
+      };
+      body = `<span class="ev-label">Evidence</span>` + [...ev].map(chip).join("") +
         `<span class="muted" title="Probability of all the evidence together, before observing it">P(evidence) = ${fmtP(inf.pEvidence)}</span>` +
         `<button class="small" data-clear-ev="all">Clear all</button>`;
     }
+    evidenceBar.innerHTML = body + `<span class="sep"></span>` + toggle;
   }
   evidenceBar.addEventListener("click", (e) => {
     const b = e.target.closest("[data-clear-ev]");
-    if (!b) return;
+    if (b) {
+      const next = new Map(evidence);
+      if (b.dataset.clearEv === "all") next.clear();
+      else next.delete(+b.dataset.clearEv);
+      if (b.dataset.clearEv === "all" || +b.dataset.clearEv === softId) hideSoftEditor();
+      setEvidence(next);
+      return;
+    }
+    const chip = e.target.closest("[data-edit-ev]");
+    if (chip) openSoftEditor(+chip.dataset.editEv);
+  });
+  evidenceBar.addEventListener("change", (e) => {
+    if (!e.target.matches("[data-soft-mode]")) return;
+    softMode = e.target.checked;
+    localStorage.setItem(SOFT_KEY, softMode ? "1" : "0");
+    if (!softMode) closeSoftEditor();
+    render();
+  });
+
+  // ------------------------------------------------------------ soft evidence editor
+
+  const softEditor = $("#soft-editor");
+  const isNeutral = (lik) => lik.every((x) => x === lik[0]);
+
+  function softLikelihoods(id) {
+    const n = M.getNode(net, id);
+    const cur = evidenceIndices().get(id);
+    if (Array.isArray(cur)) return cur;
+    if (typeof cur === "number") return n.labels.map((_, s) => (s === cur ? 1 : 0));
+    return n.labels.map(() => 1);
+  }
+
+  function openSoftEditor(id, focusState = 0) {
+    if (softId !== null && softId !== id) closeSoftEditor();
+    const n = M.getNode(net, id);
+    softId = id;
+    const lik = softLikelihoods(id);
+    softEditor.innerHTML = `
+      <div class="soft-head"><b>${esc(n.name)}</b><span class="muted">soft evidence</span><span class="grow"></span><button class="icon" data-soft-close title="Close (Esc)">✕</button></div>
+      <p class="muted">How likely is what you observed if <b>${esc(n.name)}</b> is in each state? Only the ratios matter: 1 : 0 is the same as observing the first state for certain, and equal values mean no evidence.</p>
+      ${n.labels.map((l, s) => `<div class="soft-row">
+        <span class="slabel" title="${esc(l)}">${esc(l)}</span>
+        <input type="range" min="0" max="1" step="0.01" data-lik="${s}" value="${lik[s]}">
+        <input type="number" min="0" step="0.01" data-lik="${s}" value="${+lik[s].toPrecision(4)}">
+      </div>`).join("")}
+      <div class="soft-actions"><button class="small" data-soft-reset>Reset</button><button class="small danger" data-soft-remove>Remove</button><span class="grow"></span><button class="small primary" data-soft-close>Done</button></div>`;
+    softEditor.hidden = false;
     const next = new Map(evidence);
-    if (b.dataset.clearEv === "all") next.clear();
-    else next.delete(+b.dataset.clearEv);
-    setEvidence(next);
+    next.set(id, lik.slice());
+    setEvidence(next); // renders, which positions the editor
+    const input = softEditor.querySelector(`input[type="number"][data-lik="${focusState}"]`);
+    if (input) { input.focus(); input.select(); }
+  }
+
+  function syncSoftInputs(except) {
+    const lik = softLikelihoods(softId);
+    softEditor.querySelectorAll("[data-lik]").forEach((input) => {
+      if (input !== except) input.value = input.type === "range" ? lik[+input.dataset.lik] : +lik[+input.dataset.lik].toPrecision(4);
+    });
+  }
+
+  function hideSoftEditor() {
+    softEditor.hidden = true;
+    softId = null;
+  }
+
+  // Closes the editor; equal likelihoods carry no information, so they are dropped.
+  function closeSoftEditor() {
+    if (softId === null) return;
+    const id = softId;
+    hideSoftEditor();
+    const cur = evidence.get(id);
+    if (Array.isArray(cur) && isNeutral(cur)) {
+      const next = new Map(evidence);
+      next.delete(id);
+      setEvidence(next);
+    }
+  }
+
+  function positionSoftEditor() {
+    if (softId === null) return;
+    const n = M.getNode(net, softId);
+    if (!n || !showProbs) { hideSoftEditor(); return; }
+    const { w, h } = nodeSize(n);
+    const wrap = $("#canvas-wrap").getBoundingClientRect();
+    const ew = softEditor.offsetWidth, eh = softEditor.offsetHeight;
+    let x = view.x + (n.x + w / 2) * view.k + 10;
+    if (x + ew > wrap.width - 8) x = view.x + (n.x - w / 2) * view.k - ew - 10;
+    const y = view.y + (n.y - h / 2) * view.k;
+    softEditor.style.left = Math.max(8, Math.min(wrap.width - ew - 8, x)) + "px";
+    softEditor.style.top = Math.max(8, Math.min(wrap.height - eh - 8, y)) + "px";
+  }
+
+  softEditor.addEventListener("input", (e) => {
+    if (e.target.dataset.lik === undefined || softId === null) return;
+    const v = parseFloat(e.target.value);
+    if (!(v >= 0)) return;
+    const lik = softLikelihoods(softId).slice();
+    lik[+e.target.dataset.lik] = v;
+    if (!lik.some((x) => x > 0)) { toast("At least one state needs a likelihood above 0"); syncSoftInputs(); return; }
+    const next = new Map(evidence);
+    next.set(softId, lik);
+    syncSoftInputs(setEvidence(next) ? e.target : null);
+  });
+  softEditor.addEventListener("click", (e) => {
+    if (e.target.closest("[data-soft-close]")) closeSoftEditor();
+    else if (e.target.closest("[data-soft-reset]")) {
+      const next = new Map(evidence);
+      next.set(softId, M.getNode(net, softId).labels.map(() => 1));
+      setEvidence(next);
+      syncSoftInputs();
+    } else if (e.target.closest("[data-soft-remove]")) {
+      const next = new Map(evidence);
+      next.delete(softId);
+      hideSoftEditor();
+      setEvidence(next);
+    }
+  });
+  softEditor.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" || (e.key === "Enter" && e.target.type === "number")) { e.preventDefault(); closeSoftEditor(); svg.focus(); }
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (softId !== null && !e.target.closest("#soft-editor, #evidence-bar")) closeSoftEditor();
   });
 
   function rubberRect() {
@@ -430,7 +573,10 @@
     svg.classList.remove("panning");
     if (d.mode === "pan" && !d.moved) select([]);
     else if (d.mode === "move" && d.moved) { save(); render(); }
-    else if (d.mode === "move" && d.state) toggleEvidence(d.state.id, d.state.s);
+    else if (d.mode === "move" && d.state) {
+      if (softMode) openSoftEditor(d.state.id, d.state.s);
+      else toggleEvidence(d.state.id, d.state.s);
+    }
     else if (d.mode === "arc") {
       if (d.target) {
         if (M.hasArc(net, d.from, d.target)) { toast("That arc already exists"); render(); return; }
@@ -630,7 +776,7 @@
         <dt>Select</dt><dd>Click; <kbd>Ctrl</kbd>-click to add; <kbd>Shift</kbd>-drag on empty space for a box; <kbd>Ctrl</kbd>+<kbd>A</kbd> for all.</dd>
         <dt>Move</dt><dd>Drag nodes, or nudge with arrow keys. Drag empty space to pan, scroll to zoom, <kbd>F</kbd> to fit.</dd>
         <dt>CPTs</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (with “Keep rows summing to 1” on, the rest of the row is adjusted for you), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
-        <dt>Probabilities &amp; evidence</dt><dd>With <b>Probabilities</b> on (<kbd>P</kbd>), every node shows the probability of each of its states, computed exactly from the CPTs. Click a state to observe it (for example “the grass is wet”); all other nodes update to the probabilities given that evidence. Click it again, or use the evidence bar, to clear it.</dd>
+        <dt>Probabilities &amp; evidence</dt><dd>With <b>Probabilities</b> on (<kbd>P</kbd>), every node shows the probability of each of its states, computed exactly from the CPTs. Click a state to observe it (for example “the grass is wet”); all other nodes update to the probabilities given that evidence. Click it again, or use the evidence bar, to clear it. Turn on <b>Soft evidence</b> in the evidence bar to enter likelihoods for a node's states instead of a certain observation.</dd>
         <dt>Delete / duplicate</dt><dd><kbd>Del</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd>. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</dd>
         <dt>pyAgrum</dt><dd>Export writes <code>import pyagrum as gum</code> code; <kbd>Ctrl</kbd>+<kbd>S</kbd> downloads it. Import accepts that code, hand-written <code>gum.BayesNet</code> code, and <code>gum.fastBN</code>. You can also drop a .py file on the canvas.</dd>
       </dl>`;
