@@ -6,7 +6,7 @@ It is a static site with no build step: serve the directory with any static file
 
 ## Editing
 
-- **Demo networks:** the **Demo** menu loads a ready-made network for testing: Wet grass, Asia, Late for work, Dying houseplant, Monty Hall, one with every variable type, or a random 12-variable network. `Ctrl+Z` brings back what you had.
+- **Demo networks:** the **Demo** menu loads a ready-made network for testing: Dying houseplant (shown on a first visit), Wet grass, Asia, Late for work, Monty Hall, one with every variable type, or a random 12-variable network. `Ctrl+Z` brings back what you had.
 
 - **Add a node:** double-click empty space (or press `N`), type a name, press `Enter`.
 - **Add an arc:** drag from the dot under a node onto another node, or `Shift`-drag a node. Dropping on empty space creates a new child node.
@@ -54,9 +54,9 @@ import pyagrum as gum
 bn = gum.BayesNet("Wet grass")
 bn.add(gum.LabelizedVariable("rain", "", ["yes", "no"]))
 ...
-bn.addArc("rain", "wet_grass")
+bn.addArc("rain", "wet grass")
 bn.cpt("rain").fillWith([0.2, 0.8])
-bn.cpt("wet_grass")[{"sprinkler": "off", "rain": "no"}] = [0, 1]
+bn.cpt("wet grass")[{"sprinkler": "off", "rain": "no"}] = [0, 1]
 # bn-editor-layout: {...}
 ```
 
