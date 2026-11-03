@@ -13,7 +13,6 @@
   const PROBS_KEY = "bn-editor-show-probabilities";
   const SOFT_KEY = "bn-editor-soft-evidence";
   const SOFT_KIND_KEY = "bn-editor-soft-kind";
-  const SRC_KEY = "bn-editor-loaded-src";
   const PANEL_KEY = "bn-editor-panel-collapsed";
   const NODE_H = 50;
   // probability view: header, then one row per state with a bar
@@ -119,6 +118,7 @@
   // nothing to undo) is deleted rather than kept in the list.
   function switchNetwork(id) {
     if (id === netId) return;
+    discardLinkedNetwork();
     const left = netId;
     const blank = !net.nodes.length && !undoStack.length && !redoStack.length;
     hideSoftEditor();
@@ -156,6 +156,7 @@
   // current network when that one is blank, or of an unedited copy opened from the same
   // `source` (a link or demo), so reopening a link doesn't pile up copies.
   function openNetwork(n, source = null) {
+    discardLinkedNetwork();
     const blank = netId && !net.nodes.length && !undoStack.length && !redoStack.length;
     const reuse = (source && readIndex().find((e) => e.source === source && !e.edited)) || (blank ? { id: netId } : null);
     const id = reuse ? reuse.id : newId();
@@ -190,7 +191,42 @@
     else openNetwork(M.createNetwork(untitledName()));
   }
 
+  // A network opened from a link and not changed yet: {source, importing}. It isn't in storage.
+  let unsaved = null;
+
+  // The linked network was changed: store it, and take the link out of the address bar, so
+  // reloading shows the saved copy rather than opening the link again.
+  function saveLinkedNetwork() {
+    const { source } = unsaved;
+    unsaved = null;
+    updateEntry(netId, { name: net.name, nodes: net.nodes.length, updated: Date.now(), source, edited: true });
+    store(netKey(netId), JSON.stringify(net));
+    saveEvidence();
+    sessionStorage.setItem(CURRENT_KEY, netId);
+    store(LAST_KEY, netId);
+    dropLinkFromUrl();
+    updateNetworkButton();
+  }
+
+  // Leaving an unchanged linked network forgets it; opening the link again brings it back.
+  function discardLinkedNetwork() {
+    if (!unsaved) return;
+    unsaved = null;
+    netId = null;
+    undoStack = [];
+    redoStack = [];
+    dropLinkFromUrl();
+  }
+
+  function dropLinkFromUrl() {
+    const url = new URL(location.href);
+    url.searchParams.delete("src");
+    if (url.hash.startsWith("#net=")) url.hash = "";
+    history.replaceState(null, "", url.href);
+  }
+
   function save() {
+    if (unsaved) { updateNetworkButton(); return; }
     store(netKey(netId), JSON.stringify(net));
     updateEntry(netId, { name: net.name, nodes: net.nodes.length, updated: Date.now() });
     updateNetworkButton();
@@ -201,7 +237,9 @@
     undoStack.push(snapshot);
     if (undoStack.length > 300) undoStack.shift();
     redoStack = [];
-    updateEntry(netId, { edited: true });
+    if (unsaved) {
+      if (!unsaved.importing) saveLinkedNetwork();
+    } else updateEntry(netId, { edited: true });
     updateButtons();
   }
 
@@ -450,6 +488,11 @@
   }
 
   function saveEvidence() {
+    if (unsaved) {
+      if (unsaved.importing) return;
+      saveLinkedNetwork(); // stores the evidence too
+      return;
+    }
     updateEntry(netId, { edited: true });
     store(evidenceKey(netId), JSON.stringify([...evidenceIndices()].map(([id, v]) => [id, typeof v === "object" ? v : M.getNode(net, id).labels[v]])));
   }
@@ -1374,12 +1417,11 @@
     }
   }
 
-  // Loads the network from #net=... . The hash is then removed from the address bar, so it
-  // doesn't go stale as the network is edited, and reloading keeps the edits.
+  // Loads the network from #net=... . The hash stays in the address bar until the network is
+  // changed and saved (see importLink).
   async function loadFromHash() {
     const hash = location.hash;
     if (!hash.startsWith("#net=")) return;
-    history.replaceState(null, "", location.href.replace(/#.*$/, ""));
     let code;
     try {
       code = new TextDecoder().decode(await pipe(fromBase64Url(hash.slice(5)), new DecompressionStream("deflate-raw")));
@@ -1457,11 +1499,9 @@
   }
 
   // Loads the network from the file named by ?src=<url> (.py, or a .png/.svg exported here).
-  // Reloading the same tab keeps local edits instead of fetching the file again.
   async function loadFromLink() {
     const src = new URLSearchParams(location.search).get("src");
-    if (!src || sessionStorage.getItem(SRC_KEY) === src) return;
-    sessionStorage.setItem(SRC_KEY, src);
+    if (!src) return;
     let url;
     try { url = new URL(rawUrl(src), location.href); } catch { toast("The link's src isn't a valid URL"); return; }
     toast(`Loading ${url.href}…`);
@@ -1482,28 +1522,42 @@
   }
 
   // Imports a linked file as a network of its own, so opening a link never replaces other work.
-  // Edits to it are saved like any network's.
+  // It's kept in memory only, with the link left in the address bar so reloading opens it
+  // again, until it's changed: then saveLinkedNetwork stores it like any other network.
   async function importLink(file, source) {
     const before = netId;
-    openNetwork(M.createNetwork(untitledName()), source);
-    if (!(await importFile(file))) {
-      // Nothing was imported. A blank current network that was reused just stays as it was.
-      if (netId === before) { updateEntry(netId, { source: null }); return; }
-      removeNetwork(netId);
-      netId = null;
+    const beforeBlank = netId && !unsaved && !net.nodes.length && !undoStack.length && !redoStack.length;
+    hideSoftEditor();
+    importBefore = null;
+    if (unsaved) discardLinkedNetwork();
+    else if (netId) histories.set(netId, { undo: undoStack, redo: redoStack });
+    netId = newId();
+    unsaved = { source, importing: true };
+    undoStack = [];
+    redoStack = [];
+    net = M.createNetwork(untitledName());
+    evidence = new Map();
+    inferenceCache = null;
+    selNodes = new Set();
+    selArc = null;
+    refreshNetwork();
+    const ok = await importFile(file);
+    unsaved.importing = false;
+    if (!ok) {
+      // Nothing was imported: go back to the network that was open.
+      discardLinkedNetwork();
       const back = before && readNet(before) ? before : byRecent(readIndex())[0]?.id;
       if (back) switchNetwork(back);
       else openNetwork(M.createNetwork(untitledName()));
       return;
     }
-    // A fresh copy of the link: nothing to undo, and reopening the link may replace it until it's edited.
+    if (beforeBlank) removeNetwork(before);
     undoStack = [];
     redoStack = [];
     importBefore = null;
     $("#import-undo").hidden = true;
-    updateEntry(netId, { edited: false });
     updateButtons();
-    toast(`Opened “${net.name}” from the link (${net.nodes.length} variables). Your other networks are saved in the network menu.`);
+    toast(`Opened “${net.name}” from the link (${net.nodes.length} variables). It's saved to your networks once you change it.`);
   }
 
   // Editing the code after an import offers to import it again.
@@ -1606,6 +1660,11 @@
         <button class="net-delete" data-delete-net="${esc(e.id)}" title="Delete this network" aria-label="Delete ${esc(e.name || "Untitled")}">✕</button>
       </div>`;
     });
+    if (unsaved) {
+      rows.unshift(`<div class="net-row current">
+        <button role="menuitemradio" aria-checked="true" data-net="${esc(netId)}"><b>${esc(net.name || "Untitled")}</b><span>${net.nodes.length} variables · from a link · saved once you change it</span></button>
+      </div>`);
+    }
     networksMenu.innerHTML = `<button role="menuitem" data-action="new"><b>New network</b><span>Start an empty one; the others stay saved</span></button><div class="menu-sep"></div>` + rows.join("");
   }
   networksMenu.addEventListener("click", (e) => {
