@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bayesian Network Editor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="toolbar">
+    <strong class="brand">BN Editor</strong>
+    <button data-action="new" title="New network">New</button>
+    <button data-action="import" title="Import pyAgrum code (or drop a .py file on the canvas)">Import</button>
+    <button data-action="export" title="Export pyAgrum code (Ctrl+S downloads it)">Export</button>
+    <span class="sep"></span>
+    <button data-action="undo" title="Undo (Ctrl+Z)">Undo</button>
+    <button data-action="redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+    <span class="sep"></span>
+    <button data-action="add" title="Add a node (N)">Add node</button>
+    <button data-action="layout" title="Arrange nodes in layers">Auto layout</button>
+    <button data-action="fit" title="Fit the network in view (F)">Fit</button>
+    <span class="grow"></span>
+    <span class="hint">Double-click: new node · Drag a node's handle: new arc · Del: delete</span>
+  </header>
+  <main>
+    <div id="canvas-wrap">
+      <svg id="canvas" tabindex="0">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="arrowhead"/>
+          </marker>
+          <marker id="arrow-sel" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="arrowhead sel"/>
+          </marker>
+        </defs>
+        <g id="viewport"></g>
+      </svg>
+      <input id="inline-edit" type="text" spellcheck="false" hidden>
+    </div>
+    <aside id="panel"></aside>
+  </main>
+
+  <dialog id="export-dialog">
+    <form method="dialog">
+      <h2>Export pyAgrum code</h2>
+      <textarea id="export-code" readonly spellcheck="false"></textarea>
+      <p id="export-warnings" class="warn"></p>
+      <div class="dialog-actions">
+        <button type="button" data-action="copy-export">Copy</button>
+        <button type="button" data-action="download-export">Download .py</button>
+        <span class="grow"></span>
+        <button value="close">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="import-dialog">
+    <form method="dialog">
+      <h2>Import pyAgrum code</h2>
+      <p class="muted">Paste Python that builds a <code>gum.BayesNet</code> or calls <code>gum.fastBN</code>. Loops and other control flow are skipped.</p>
+      <textarea id="import-code" spellcheck="false" placeholder='import pyagrum as gum&#10;bn = gum.fastBN("a->b<-c")'></textarea>
+      <ul id="import-warnings" class="warn"></ul>
+      <div class="dialog-actions">
+        <label class="file-button">Open .py file…<input id="import-file" type="file" accept=".py,text/x-python,text/plain" hidden></label>
+        <span class="grow"></span>
+        <button value="close">Cancel</button>
+        <button type="button" data-action="do-import" class="primary">Import</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status"></div>
+
+  <script src="js/model.js"></script>
+  <script src="js/pyagrum.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
