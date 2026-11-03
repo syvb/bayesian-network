@@ -142,8 +142,8 @@
         <span class="nowrap"><label class="check" title="When you type a value, the other states in that row are adjusted so the row still sums to ${prefs.percent ? "100%" : "1"}">
           <input type="checkbox" data-cpt="balance"${prefs.balance ? " checked" : ""}> Keep rows summing to ${prefs.percent ? "100%" : "1"}
         </label>
-        <button class="help-button" popovertarget="balance-help" title="How does this work?" aria-label="How keeping rows summing to 1 works">?</button></span>
-        ${collapseButton()}
+        <button class="help-button" popovertarget="balance-help" title="How does this work?" aria-label="How keeping rows summing to 1 works">?</button>
+        ${collapseButton()}</span>
         </span>`;
     }
 

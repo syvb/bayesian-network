@@ -48,6 +48,7 @@ button, .file-button {
   border-radius: 6px;
   padding: 4px 10px;
   cursor: pointer;
+  white-space: nowrap;
 }
 button:hover, .file-button:hover { border-color: var(--accent); }
 button:disabled { opacity: 0.45; cursor: default; border-color: var(--border); }
@@ -67,13 +68,14 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap; /* below about 980px the buttons go onto a second row rather than squeezing */
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
-.brand { margin-right: 8px; position: relative; cursor: default; }
+.brand { margin-right: 8px; position: relative; cursor: default; white-space: nowrap; }
 /* A hover bubble spelling out "BN", styled like .drag-tip */
 .brand::after, .brand::before {
   position: absolute;
@@ -108,6 +110,15 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft
 .sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
 .grow { flex: 1; }
 .hint, .muted { color: var(--muted); font-size: 12px; }
+.toolbar .hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* The shortcuts are also in the side panel's help; drop them once they no longer fit on one line. */
+@media (max-width: 1400px) { .toolbar .hint { display: none; } }
+/* Tighter toolbar so it stays on one row down to about 860px. */
+@media (max-width: 1000px) {
+  .toolbar { gap: 4px; }
+  .toolbar button { padding: 4px 7px; }
+  .toolbar .sep { margin: 0 2px; }
+}
 
 main { flex: 1; display: flex; min-height: 0; }
 #work { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -160,7 +171,7 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 
 #panel {
-  width: 400px;
+  width: clamp(300px, 30vw, 400px);
   flex: none;
   overflow: auto;
   border-left: 1px solid var(--border);
@@ -446,6 +457,8 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 }
 #evidence-bar[hidden] { display: none; }
 .ev-label { font-weight: 600; color: var(--observed); }
+/* The hint wraps within itself on narrow canvases, keeping the Soft evidence toggle beside it. */
+.ev-hint { flex: 1 1 0; min-width: 14em; }
 .ev-chip {
   display: inline-flex;
   align-items: center;

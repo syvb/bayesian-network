@@ -351,7 +351,7 @@
     if (inf.error) {
       body = `<span class="warn">${esc(inf.error)}</span>`;
     } else if (!ev.size) {
-      body = `<span class="muted">${softMode
+      body = `<span class="muted ev-hint">${softMode
         ? "Click a state in any node to enter soft evidence (probabilities or likelihoods) for that node."
         : "Click a state in any node to observe it; every other node then shows its updated probabilities."}</span>`;
     } else {
