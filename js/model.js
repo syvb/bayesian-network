@@ -217,6 +217,16 @@
     return null;
   }
 
+  // Puts id's parents in `order` (a permutation of its parent ids). Parent order is the order of
+  // the node's incoming arcs; the CPT is remapped so every probability stays with its row.
+  function setParentOrder(net, id, order) {
+    restructure(net, () => {
+      const sorted = order.map((p) => net.arcs.find((a) => a.to === id && a.from === p));
+      let k = 0;
+      net.arcs = net.arcs.map((a) => (a.to === id ? sorted[k++] : a));
+    });
+  }
+
   function removeArc(net, from, to) {
     restructure(net, () => { net.arcs = net.arcs.filter((a) => !(a.from === from && a.to === to)); });
   }
@@ -359,7 +369,7 @@
   }
 
   const api = {
-    TYPES, fmtNum, labelsFor, createNetwork, getNode, nodeByName, parentsOf, childrenOf, card, uniqueName,
+    TYPES, fmtNum, labelsFor, createNetwork, getNode, nodeByName, parentsOf, childrenOf, card, uniqueName, setParentOrder,
     addNode, setDomain, uniformCpt, wouldCycle, hasArc, stateMap, restructure, addArc, removeArc, reverseArc,
     removeNode, updateDomain, cptRows, normalizeRow, normalizeCpt, randomizeCpt, uniformizeCpt, badRows,
     autoLayout, strides,

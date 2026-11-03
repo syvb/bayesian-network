@@ -606,3 +606,11 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 
 #empty-hint { pointer-events: none; }
 #empty-hint[hidden] { display: none; }
+
+/* Reordering parents in the side panel */
+.chip[draggable="true"] { cursor: grab; }
+.chip.dragging { opacity: 0.4; }
+.chip.drop-before { box-shadow: -3px 0 0 var(--accent); }
+.chip.drop-after { box-shadow: 3px 0 0 var(--accent); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chips-note { margin: 4px 0 0; }

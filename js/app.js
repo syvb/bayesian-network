@@ -1162,7 +1162,8 @@
   function renderNodePanel(n) {
     const parents = M.parentsOf(net, n.id).map((id) => M.getNode(net, id));
     const children = M.childrenOf(net, n.id).map((id) => M.getNode(net, id));
-    const chip = (o, role) => `<span class="chip" data-select="${o.id}">${esc(o.name)}<button class="icon" data-remove-arc="${role === "parent" ? o.id + ">" + n.id : n.id + ">" + o.id}" title="Remove arc">✕</button></span>`;
+    const reorder = parents.length > 1;
+    const chip = (o, role) => `<span class="chip"${role === "parent" && reorder ? ` draggable="true" tabindex="0" data-parent="${o.id}" title="Drag (or Alt+←/→) to reorder; the probability table's columns follow this order"` : ""} data-select="${o.id}">${esc(o.name)}<button class="icon" data-remove-arc="${role === "parent" ? o.id + ">" + n.id : n.id + ">" + o.id}" title="Remove arc">✕</button></span>`;
     panel.innerHTML = `
       <h2>Variable</h2>
       <div class="field"><label for="n-name">Name</label><input id="n-name" type="text" value="${esc(n.name)}"></div>
@@ -1174,7 +1175,8 @@
       <h3>States</h3>
       ${domainEditor(n)}
       <h3>Parents</h3>
-      <div class="chips">${parents.map((p) => chip(p, "parent")).join("") || '<span class="muted">None</span>'}</div>
+      <div class="chips" id="parent-chips">${parents.map((p) => chip(p, "parent")).join("") || '<span class="muted">None</span>'}</div>
+      ${reorder ? '<p class="muted chips-note">Drag to reorder. The probability table lists parents in this order, the first one in the leftmost column.</p>' : ""}
       <h3>Children</h3>
       <div class="chips">${children.map((c) => chip(c, "child")).join("") || '<span class="muted">None</span>'}</div>
       <h3>CPT</h3>
@@ -1246,6 +1248,52 @@
       change(() => M.removeArc(net, from, to));
     }));
     panel.querySelector('[data-act="delete"]').onclick = deleteSelection;
+
+    // Reordering parents: drag a chip before or after another, or Alt+←/→ on a focused chip.
+    const order = parents.map((p) => p.id);
+    const moveParent = (id, to) => {
+      const next = order.filter((x) => x !== id);
+      next.splice(Math.max(0, Math.min(next.length, to)), 0, id);
+      if (next.every((x, i) => x === order[i])) return;
+      focusAfterRender = { sel: `[data-parent="${id}"]` };
+      change(() => M.setParentOrder(net, n.id, next));
+      flushPanel();
+    };
+    const box = panel.querySelector("#parent-chips");
+    let dragged = null;
+    const dropSlot = (e) => {
+      // the slot (0..length) whose gap is nearest the pointer
+      const chips = [...box.querySelectorAll("[data-parent]")];
+      const i = chips.findIndex((c) => { const r = c.getBoundingClientRect(); return e.clientY < r.bottom && e.clientX < r.left + r.width / 2; });
+      return i < 0 ? chips.length : i;
+    };
+    const clearMarks = () => box.querySelectorAll(".drop-before, .drop-after").forEach((c) => c.classList.remove("drop-before", "drop-after"));
+    box.querySelectorAll("[data-parent]").forEach((el) => {
+      const id = +el.dataset.parent;
+      el.addEventListener("dragstart", (e) => { dragged = id; el.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", el.textContent); });
+      el.addEventListener("dragend", () => { dragged = null; el.classList.remove("dragging"); clearMarks(); });
+      el.addEventListener("keydown", (e) => {
+        if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        moveParent(id, order.indexOf(id) + (e.key === "ArrowLeft" ? -1 : 1));
+      });
+    });
+    box.addEventListener("dragover", (e) => {
+      if (dragged === null) return;
+      e.preventDefault();
+      clearMarks();
+      const chips = [...box.querySelectorAll("[data-parent]")], slot = dropSlot(e);
+      if (slot < chips.length) chips[slot].classList.add("drop-before");
+      else chips[chips.length - 1].classList.add("drop-after");
+    });
+    box.addEventListener("dragleave", (e) => { if (!box.contains(e.relatedTarget)) clearMarks(); });
+    box.addEventListener("drop", (e) => {
+      if (dragged === null) return;
+      e.preventDefault();
+      const slot = dropSlot(e), from = order.indexOf(dragged);
+      moveParent(dragged, slot > from ? slot - 1 : slot);
+    });
   }
 
   // ------------------------------------------------------------ import / export
