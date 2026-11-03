@@ -69,6 +69,26 @@ bn.cpt("dysp")[{"bronc": "yes", "either": "yes"}] = [0.1, 0.9]
 # bn-editor-layout: {"asia":[160,80],"smoke":[480,80],"tub":[160,200],"lung":[380,200],"bronc":[580,200],"either":[270,320],"xray":[170,440],"dysp":[480,440]}
 `;
 
+  // The host never opens your door or the car's door. Set your_choice and host_opens as evidence:
+  // switching wins 2/3 of the time.
+  const MONTY_HALL = `import pyagrum as gum
+
+doors = ["door 1", "door 2", "door 3"]
+bn = gum.BayesNet("Monty Hall")
+bn.add(gum.LabelizedVariable("your_choice", "The door you pick first", doors))
+bn.add(gum.LabelizedVariable("car", "Where the car is", doors))
+bn.add(gum.LabelizedVariable("host_opens", "The door the host opens", doors))
+bn.addArc("your_choice", "host_opens")
+bn.addArc("car", "host_opens")
+bn.cpt("your_choice").fillWith([1 / 3, 1 / 3, 1 / 3])
+bn.cpt("car").fillWith([1 / 3, 1 / 3, 1 / 3])
+for choice in doors:
+    for car in doors:
+        options = [d for d in doors if d != choice and d != car]
+        bn.cpt("host_opens")[{"your_choice": choice, "car": car}] = [1 / len(options) if d in options else 0 for d in doors]
+# bn-editor-layout: {"your_choice":[180,90],"car":[460,90],"host_opens":[320,240]}
+`;
+
   // One variable of each pyAgrum type; CPTs are random, as with gum.fastBN.
   const VARIABLE_TYPES = `import pyagrum as gum
 
@@ -95,6 +115,7 @@ bn = gum.fastBN("season{winter|spring|summer|autumn}->temperature[-10,0,10,20,35
   globalThis.BNDemos = [
     { id: "wet-grass", label: "Wet grass", detail: "4 binary variables", build: fromCode(WET_GRASS) },
     { id: "asia", label: "Asia (chest clinic)", detail: "8 variables, classic textbook network", build: fromCode(ASIA) },
+    { id: "monty-hall", label: "Monty Hall", detail: "3 variables; observe your door and the opened one", build: fromCode(MONTY_HALL) },
     { id: "types", label: "All variable types", detail: "labelized, range, integer, discretized", build: fromCode(VARIABLE_TYPES) },
     { id: "random", label: "Random network", detail: "12 variables, random arcs and CPTs", build: () => randomNetwork() },
   ];

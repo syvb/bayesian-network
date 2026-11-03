@@ -6,7 +6,7 @@ It is a static site with no build step: serve the directory with any static file
 
 ## Editing
 
-- **Demo networks:** the **Demo** menu loads a ready-made network for testing: Wet grass, Asia, one with every variable type, or a random 12-variable network. `Ctrl+Z` brings back what you had.
+- **Demo networks:** the **Demo** menu loads a ready-made network for testing: Wet grass, Asia, Monty Hall, one with every variable type, or a random 12-variable network. `Ctrl+Z` brings back what you had.
 
 - **Add a node:** double-click empty space (or press `N`), type a name, press `Enter`.
 - **Add an arc:** drag from the dot under a node onto another node, or `Shift`-drag a node. Dropping on empty space creates a new child node.
@@ -71,6 +71,6 @@ On the pyAgrum side it supports:
 - CPTs: `fillWith`, `fillFromFunction("...")`, `normalize`, `normalizeAsCPT`, `translate`, `scale`, `bn.cpt(x)[{...}] = ...` and numpy-style indices such as `bn.cpt(x)[1, :] = ...`
 - aggregators and noisy gates (`addMAX`, `addMIN`, `addSUM`, `addAMPLITUDE`, `addMEDIAN`, `addCOUNT`, `addEXISTS`, `addFORALL`, `addOR`, `addAND`, `addNoisyOR`, `addNoisyORNet`, `addNoisyAND`, `addLogit`, `addWeightedArc`), whose CPTs are computed the way pyAgrum does and imported as plain CPTs
 
-When the code builds several networks, the Import dialog lets you choose which one to load (the largest by default). Lines that can't be run are skipped and listed as warnings, as are CPT cells the code never fills (pyAgrum leaves them at 0). `fastBN` CPTs are random, as they are in pyAgrum. Influence diagrams, Markov random fields and `gum.loadBN(file)` aren't supported.
+When the code builds several networks, the Import dialog lets you choose which one to load (by default the largest; the first one built if several are equally large). Lines that can't be run are skipped and listed as warnings, as are CPT cells the code never fills (pyAgrum leaves them at 0). `fastBN` CPTs are random, as they are in pyAgrum. Influence diagrams, Markov random fields and `gum.loadBN(file)` aren't supported.
 
 The importer is checked against pyAgrum itself: scripts and notebooks from pyAgrum's documentation and GitHub, and the bnlearn benchmark networks (alarm, hailfinder, andes, pathfinder, link, munin with 1,041 variables, ...) written out as pyAgrum code, import to exactly the CPTs pyAgrum computes.

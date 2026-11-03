@@ -650,7 +650,7 @@
     const varName = (b) => [...result.globals].find(([, v]) => v === b)?.[0];
     const networks = candidates.map((b) => ({ label: varName(b) || b.net.name, nodes: b.net.nodes.length, arcs: b.net.arcs.length }));
     networks.forEach((n, i) => { if (networks.some((m, j) => j < i && m.label === n.label)) n.label += ` (${networks.slice(0, i + 1).filter((m) => m.label === n.label).length})`; });
-    let picked = candidates.reduce((best, b, i) => (b.net.nodes.length >= candidates[best].net.nodes.length ? i : best), 0);
+    let picked = candidates.reduce((best, b, i) => (b.net.nodes.length > candidates[best].net.nodes.length ? i : best), 0);
     if (Number.isInteger(options.pick) && candidates[options.pick]) picked = options.pick;
     const bn = candidates[picked];
     const net = bn.net;
