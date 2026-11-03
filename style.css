@@ -231,8 +231,8 @@ button.collapse:hover { color: var(--text); }
 .dock-empty { color: var(--muted); padding: 10px 14px; margin: 0; }
 
 .cpt-scroll { flex: 1; min-height: 0; overflow: auto; outline: none; }
-table.cpt-grid { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
-.cpt-grid th, .cpt-grid td { border-bottom: 1px solid var(--border); padding: 0 8px; height: 30px; white-space: nowrap; }
+table.cpt-grid { border-collapse: separate; border-spacing: 0; margin: 0 auto; max-width: 100%; font-size: 15px; font-variant-numeric: tabular-nums; }
+.cpt-grid th, .cpt-grid td { border-bottom: 1px solid var(--border); padding: 0 10px; height: 36px; white-space: nowrap; }
 .cpt-grid thead th {
   position: sticky;
   top: 0;
@@ -246,11 +246,10 @@ table.cpt-grid { border-collapse: separate; border-spacing: 0; width: 100%; font
   cursor: default;
 }
 .cpt-grid th.pcol { border-right: 1px solid var(--border); }
-.cpt-grid th.pcol select { margin-top: 2px; font-size: 12px; padding: 0 2px; max-width: 120px; font-weight: normal; }
-.cpt-grid th.bar-h { width: 340px; min-width: 220px; cursor: pointer; }
-.cpt-grid th.status-h { width: 100%; }
-.cpt-grid th.bar-h .muted { font-weight: normal; margin-left: 6px; }
-.cpt-grid th.state { text-align: right; min-width: 76px; cursor: pointer; }
+.cpt-grid th.pcol select { margin-top: 2px; font-size: 13px; padding: 0 2px; max-width: 120px; font-weight: normal; }
+.cpt-grid th.bar-h { width: 360px; min-width: 160px; white-space: normal; cursor: pointer; }
+.cpt-grid th.bar-h .muted { display: block; font-weight: normal; font-size: 12px; }
+.cpt-grid th.state { text-align: right; min-width: 84px; cursor: pointer; }
 .cpt-grid th.state:hover, .cpt-grid th.bar-h:hover { color: var(--accent); }
 .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
 .cpt-grid td.pcell { border-right: 1px solid var(--border); cursor: pointer; vertical-align: top; padding-top: 6px; }
@@ -260,7 +259,7 @@ table.cpt-grid { border-collapse: separate; border-spacing: 0; width: 100%; font
 .cpt-grid td.cell.sel { background: var(--accent-soft); }
 .cpt-grid td.cell.active { box-shadow: inset 0 0 0 2px var(--accent); }
 .cpt-scroll:not(:focus-within) td.cell.active { box-shadow: inset 0 0 0 2px var(--border); }
-.cpt-grid td.status { color: var(--danger); font-size: 12px; min-width: 70px; }
+.cpt-grid td.status { color: var(--danger); font-size: 13px; min-width: 80px; }
 .cpt-grid tr.bad td.cell, .cpt-grid tr.bad td.bar-cell { background-color: color-mix(in srgb, var(--danger) 8%, transparent); }
 .cpt-grid tr.bad td.cell.sel { background: var(--accent-soft); }
 input.cell-edit {
@@ -277,7 +276,7 @@ input.cell-edit {
 
 .bar {
   position: relative;
-  height: 20px;
+  height: 24px;
   border-radius: 5px;
   background: repeating-linear-gradient(45deg, var(--bg), var(--bg) 4px, var(--border) 4px, var(--border) 5px);
   overflow: visible;
@@ -288,8 +287,8 @@ input.cell-edit {
   top: 0;
   bottom: 0;
   overflow: hidden;
-  font-size: 11px;
-  line-height: 20px;
+  font-size: 13px;
+  line-height: 24px;
   text-align: center;
   font-weight: 600;
   user-select: none;
@@ -447,7 +446,7 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 .soft-actions { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
 
 /* ---------------------------------------------------------------- CPT row targeting */
-.cpt-grid td.bar-cell .bar { width: 340px; max-width: 100%; }
+.cpt-grid td.bar-cell .bar { width: 100%; }
 .cpt-grid tbody tr.odd td:not(.pcell) { background-color: color-mix(in srgb, var(--text) 3%, transparent); }
 .cpt-grid tbody tr.group-start td, .cpt-grid tbody tr.group-start td.pcell { border-top: 2px solid color-mix(in srgb, var(--text) 25%, transparent); }
 .cpt-grid tbody tr.hot td:not(.pcell), .cpt-grid td.pcell.hot { background-color: color-mix(in srgb, var(--accent) 13%, transparent); }

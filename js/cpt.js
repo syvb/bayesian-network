@@ -144,7 +144,7 @@
         const w = (Math.max(0, v) / scale) * 100;
         const [bg, fg] = color(s);
         const corners = `${s === 0 ? "5px" : "0"} ${s === vals.length - 1 ? "5px 5px" : "0 0"} ${s === 0 ? "5px" : "0"}`;
-        segs += `<div class="seg" data-seg="${s}" title="${Math.round(v * 1000) / 10}%" style="left:${acc}%;width:${w}%;background:${bg};color:${fg};border-radius:${corners}">${w >= 6 ? Math.round(v * 100) + "%" : ""}</div>`;
+        segs += `<div class="seg" data-seg="${s}" title="${Math.round(v * 1000) / 10}%" style="left:${acc}%;width:${w}%;background:${bg};color:${fg};border-radius:${corners}">${w >= 9 ? Math.round(v * 100) + "%" : ""}</div>`;
         acc += w;
         if (s < vals.length - 1) handles += `<div class="handle" data-h="${s}" style="left:${acc}%"></div>`;
       });
