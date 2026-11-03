@@ -324,17 +324,44 @@
     measureCtx.font = font;
     return measureCtx.measureText(s).width;
   }
+  // A long name wraps onto up to NAME_LINES lines of at most NAME_MAX px; the last line gets an
+  // ellipsis if it still doesn't fit (the full name is in the node's tooltip).
+  const NAME_FONT = "600 14px system-ui, sans-serif", NAME_MAX = 200, NAME_LINES = 3, NAME_LH = 17;
+  const nameCache = new Map();
+  function nameLines(name) {
+    if (nameCache.has(name)) return nameCache.get(name);
+    const lines = [];
+    let line = "";
+    for (const word of name.split(/\s+/).filter(Boolean)) {
+      const next = line ? line + " " + word : word;
+      if (!line || textWidth(next, NAME_FONT) <= NAME_MAX) line = next;
+      else { lines.push(line); line = word; }
+    }
+    lines.push(line);
+    const out = lines.slice(0, NAME_LINES);
+    if (lines.length > NAME_LINES) out[NAME_LINES - 1] += " " + lines.slice(NAME_LINES).join(" ");
+    for (let i = 0; i < out.length; i++) out[i] = truncate(out[i], NAME_FONT, NAME_MAX);
+    if (nameCache.size > 2000) nameCache.clear();
+    nameCache.set(name, out);
+    return out;
+  }
   function nodeWidth(n) {
-    return Math.max(84, Math.ceil(textWidth(n.name, "600 14px system-ui, sans-serif")) + 30);
+    return Math.max(84, ...nameLines(n.name).map((l) => Math.ceil(textWidth(l, NAME_FONT)) + 30));
+  }
+  // The name as <tspan> lines, the first line's baseline at y.
+  function nameSvg(n, y) {
+    return `<text class="name" text-anchor="middle" y="${y}">` +
+      nameLines(n.name).map((l, i) => `<tspan x="0" dy="${i ? NAME_LH : 0}">${esc(l)}</tspan>`).join("") + `</text>`;
   }
   function labelWidth(n) {
     return Math.min(PROB_LABEL_MAX, Math.max(...n.labels.map((l) => Math.ceil(textWidth(l, "12px system-ui, sans-serif")))));
   }
   function nodeSize(n) {
-    if (!showProbs) return { w: nodeWidth(n), h: NODE_H };
+    const extra = (nameLines(n.name).length - 1) * NAME_LH;
+    if (!showProbs) return { w: nodeWidth(n), h: NODE_H + extra };
     return {
       w: Math.max(nodeWidth(n), 10 + labelWidth(n) + 8 + PROB_BAR + PROB_PCT + 6),
-      h: PROB_HEAD + n.labels.length * PROB_ROW + 8,
+      h: PROB_HEAD + extra + n.labels.length * PROB_ROW + 8,
     };
   }
   function truncate(text, font, maxW) {
@@ -415,22 +442,25 @@
       let content;
       if (inf) {
         const probs = inf.marginals && inf.marginals.get(n.id);
-        const lw = labelWidth(n), barX = -w / 2 + 10 + lw + 8;
-        content = `<text class="name" text-anchor="middle" y="${-h / 2 + 20}">${esc(n.name)}</text>` +
+        // The bars take whatever width the name leaves over, instead of leaving a gap.
+        const lw = labelWidth(n), barX = -w / 2 + 10 + lw + 8, barW = w - 10 - lw - 8 - PROB_PCT - 6;
+        const head = PROB_HEAD + (nameLines(n.name).length - 1) * NAME_LH;
+        content = nameSvg(n, -h / 2 + 20) +
           n.labels.map((l, s) => {
-            const y = -h / 2 + PROB_HEAD + s * PROB_ROW;
+            const y = -h / 2 + head + s * PROB_ROW;
             const p = probs ? probs[s] : null;
             const pct = p === null ? "–" : p >= 0.9995 ? "100%" : (p * 100).toFixed(1) + "%";
             return `<g class="state-row${observed === s ? " observed" : ""}" data-state="${s}">` +
               `<rect class="row-hit" x="${-w / 2 + 4}" y="${y}" width="${w - 8}" height="${PROB_ROW}" rx="3"/>` +
               `<text class="slabel" x="${-w / 2 + 10}" y="${y + 13}">${esc(truncate(l, "12px system-ui, sans-serif", lw))}</text>` +
-              `<rect class="pbar-bg" x="${barX}" y="${y + 4}" width="${PROB_BAR}" height="10" rx="2"/>` +
-              (p ? `<rect class="pbar" x="${barX}" y="${y + 4}" width="${PROB_BAR * p}" height="10" rx="2"/>` : "") +
+              `<rect class="pbar-bg" x="${barX}" y="${y + 4}" width="${barW}" height="10" rx="2"/>` +
+              (p ? `<rect class="pbar" x="${barX}" y="${y + 4}" width="${barW * p}" height="10" rx="2"/>` : "") +
               `<text class="pct" x="${w / 2 - 8}" y="${y + 13}" text-anchor="end">${pct}</text></g>`;
           }).join("");
       } else {
-        content = `<text class="name" text-anchor="middle" y="-3">${esc(n.name)}</text>` +
-          `<text class="states" text-anchor="middle" y="14">${esc(truncate(n.labels.join(" · "), "11px system-ui, sans-serif", w - 16))}</text>`;
+        const lines = nameLines(n.name).length;
+        content = nameSvg(n, -3 - (lines - 1) * NAME_LH / 2) +
+          `<text class="states" text-anchor="middle" y="${14 + (lines - 1) * NAME_LH / 2}">${esc(truncate(n.labels.join(" · "), "11px system-ui, sans-serif", w - 16))}</text>`;
       }
       const tip = !showProbs ? "" : softMode ? "\nClick a state to enter soft evidence for this node" : "\nClick a state to set or clear it as evidence";
       parts.push(
