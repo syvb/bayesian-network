@@ -1209,6 +1209,46 @@
 
   // Loads the network from the file named by ?src=<url> (.py, or a .png/.svg exported here).
   // Reloading the same tab keeps local edits instead of fetching the file again.
+  // ------------------------------------------------------------ #net= links
+
+  // The network travels in the URL hash as its pyAgrum export (with layout and evidence),
+  // deflate-compressed and base64url-encoded. The hash never reaches a server.
+  const toBase64Url = (bytes) => btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join("")).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const fromBase64Url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  const pipe = async (bytes, stream) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
+
+  async function shareLink() {
+    if (!net.nodes.length) { toast("The network is empty"); return; }
+    const packed = await pipe(new TextEncoder().encode(exportCode()), new CompressionStream("deflate-raw"));
+    const hash = "#net=" + toBase64Url(packed);
+    const url = location.href.replace(/[?#].*$/, "") + hash;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast(`Copied a link with the network in it (${url.length.toLocaleString()} characters)`);
+    } catch {
+      prompt("Copy this link:", url);
+    }
+  }
+
+  // Loads the network from #net=... . The hash is then removed from the address bar, so it
+  // doesn't go stale as the network is edited, and reloading keeps the edits.
+  async function loadFromHash() {
+    const hash = location.hash;
+    if (!hash.startsWith("#net=")) return;
+    history.replaceState(null, "", location.href.replace(/#.*$/, ""));
+    let code;
+    try {
+      code = new TextDecoder().decode(await pipe(fromBase64Url(hash.slice(5)), new DecompressionStream("deflate-raw")));
+    } catch {
+      toast("This link's network is damaged (it may have been cut short when it was copied)");
+      return;
+    }
+    if (await importFile(new File([code], "network.py"))) {
+      toast(`Loaded ${net.nodes.length} variables from the link (Ctrl+Z to go back)`);
+    }
+  }
+  window.addEventListener("hashchange", loadFromHash);
+
   async function loadFromLink() {
     const src = new URLSearchParams(location.search).get("src");
     if (!src || sessionStorage.getItem(SRC_KEY) === src) return;
@@ -1261,6 +1301,7 @@
     demo: () => toggleDemoMenu(),
     probs: toggleProbs,
     export: openExport,
+    share: shareLink,
     undo, redo,
     add: () => addNodeShortcut(true),
     layout: () => { change(() => M.autoLayout(net)); fit(); },
@@ -1332,6 +1373,7 @@
   updateButtons();
   requestAnimationFrame(fit);
   loadFromLink();
+  loadFromHash();
 
   // Exposed for debugging from the console.
   globalThis.bnEditor = { get net() { return net; }, select, render };

@@ -114,9 +114,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft
 /* The shortcuts are also in the side panel's help; drop them once they no longer fit on one line. */
 @media (max-width: 1400px) { .toolbar .hint { display: none; } }
 /* Tighter toolbar so it stays on one row down to about 860px. */
-@media (max-width: 1000px) {
-  .toolbar { gap: 4px; }
-  .toolbar button { padding: 4px 7px; }
+@media (max-width: 1040px) {
+  .toolbar { gap: 3px; }
+  .toolbar button { padding: 4px 5px; }
   .toolbar .sep { margin: 0 2px; }
 }
 
