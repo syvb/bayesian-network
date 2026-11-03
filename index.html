@@ -24,7 +24,10 @@
 <body>
   <header class="toolbar">
     <strong class="brand" data-tip="Bayesian Network Editor">BN Editor</strong>
-    <button data-action="new" title="New network">New</button>
+    <span class="menu-anchor">
+      <button data-action="networks" class="net-switch" title="Switch between your saved networks, or start a new one" aria-haspopup="menu" aria-expanded="false"><span id="net-switch-name"></span> ▾</button>
+      <div id="networks-menu" class="menu" role="menu" hidden></div>
+    </span>
     <button data-action="import" title="Import pyAgrum code (or drop a .py file on the canvas)">Import</button>
     <button data-action="export" title="Export pyAgrum code (Ctrl+S downloads it)">Export</button>
     <span class="menu-anchor">
@@ -39,8 +42,8 @@
       <div id="demo-menu" class="menu" role="menu" hidden></div>
     </span>
     <span class="sep"></span>
-    <button data-action="undo" title="Undo (Ctrl+Z)">Undo</button>
-    <button data-action="redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+    <button data-action="undo" title="Undo (Ctrl+Z)" aria-label="Undo"><span class="narrow-icon" aria-hidden="true">↶</span><span class="wide-label">Undo</span></button>
+    <button data-action="redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo"><span class="narrow-icon" aria-hidden="true">↷</span><span class="wide-label">Redo</span></button>
     <span class="sep"></span>
     <button data-action="probs" class="toggle" aria-pressed="true" title="Show each node's probabilities and set evidence by clicking states (P)">Probabilities</button>
     <span class="sep"></span>

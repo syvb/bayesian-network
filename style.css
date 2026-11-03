@@ -114,7 +114,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft
 /* The shortcuts are also in the side panel's help; drop them once they no longer fit on one line. */
 @media (max-width: 1400px) { .toolbar .hint { display: none; } }
 /* Tighter toolbar so it stays on one row down to about 860px. */
-@media (max-width: 1040px) {
+@media (max-width: 1130px) {
   .toolbar { gap: 3px; }
   .toolbar button { padding: 4px 5px; }
   .toolbar .sep { margin: 0 2px; }
@@ -584,3 +584,22 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 #gist-link { width: 100%; box-sizing: border-box; margin: 10px 0 6px; padding: 6px 8px; font: 12px ui-monospace, monospace; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
 #gist-page { color: var(--accent); }
 #share-menu { min-width: 330px; }
+
+/* The network menu: the current network's name, then a list of the saved ones. */
+.toolbar .net-switch { display: inline-flex; align-items: baseline; gap: 4px; max-width: 200px; white-space: nowrap; }
+#net-switch-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#networks-menu { min-width: 300px; max-height: min(70vh, 520px); overflow: auto; }
+.menu-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+.net-row { display: flex; align-items: stretch; border-radius: 5px; }
+.net-row.current { background: var(--accent-soft); }
+.net-row.current b::before { content: "✓ "; color: var(--accent); }
+.menu .net-row button:first-child { flex: 1; min-width: 0; }
+.menu .net-row b { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu .net-delete { width: 30px; flex: none; align-items: center; justify-content: center; color: var(--muted); }
+.menu .net-delete:hover, .menu .net-delete:focus { color: var(--danger); }
+.narrow-icon { display: none; }
+@media (max-width: 1130px) {
+  .toolbar .net-switch { max-width: 86px; }
+  .toolbar .narrow-icon { display: inline; font-size: 15px; line-height: 1; }
+  .toolbar .wide-label { display: none; }
+}

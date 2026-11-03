@@ -1,8 +1,15 @@
 (function () {
   "use strict";
   const M = globalThis.BNModel, P = globalThis.BNPyAgrum;
-  const STORAGE_KEY = "bn-editor-network";
-  const EVIDENCE_KEY = "bn-editor-evidence";
+  // Each network is saved under its own keys, listed in INDEX_KEY. Older versions kept one
+  // network in OLD_NET_KEY and OLD_EVIDENCE_KEY; it becomes the first network of the list.
+  const INDEX_KEY = "bn-editor-networks";
+  const netKey = (id) => "bn-editor-net:" + id;
+  const evidenceKey = (id) => "bn-editor-evidence:" + id;
+  const CURRENT_KEY = "bn-editor-current"; // sessionStorage: this tab's network, kept on reload
+  const LAST_KEY = "bn-editor-last"; // the network a new tab opens
+  const OLD_NET_KEY = "bn-editor-network";
+  const OLD_EVIDENCE_KEY = "bn-editor-evidence";
   const PROBS_KEY = "bn-editor-show-probabilities";
   const SOFT_KEY = "bn-editor-soft-evidence";
   const SOFT_KIND_KEY = "bn-editor-soft-kind";
@@ -29,7 +36,6 @@
   // {target: probabilities} (soft evidence that sets the node's probabilities).
   // Editor state, not part of undo.
   let evidence = new Map();
-  try { evidence = new Map(JSON.parse(localStorage.getItem(EVIDENCE_KEY)) || []); } catch {}
   let inferenceCache = null;
   let softMode = localStorage.getItem(SOFT_KEY) === "1";
   let softId = null; // node whose soft evidence editor is open
@@ -39,16 +45,155 @@
 
   // ------------------------------------------------------------ state & history
 
-  function load() {
+  let netId = null; // the id of the network being edited
+  // Undo history of the other networks edited in this tab: id -> {undo, redo}.
+  const histories = new Map();
+
+  let storageFullShown = false;
+  function store(key, value) {
     try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+      localStorage.setItem(key, value);
+    } catch {
+      if (!storageFullShown) toast("The browser's storage for this page is full, so changes aren't being saved. Delete networks you don't need (network menu, top left).");
+      storageFullShown = true;
+    }
+  }
+
+  // The saved networks: [{id, name, nodes, updated, source, edited}]. `source` names the link or
+  // demo a network was opened from; `edited` says whether it changed since.
+  function readIndex() {
+    try {
+      const list = JSON.parse(localStorage.getItem(INDEX_KEY));
+      if (Array.isArray(list)) return list;
+    } catch {}
+    return [];
+  }
+  function updateEntry(id, fields) {
+    const list = readIndex();
+    const entry = list.find((e) => e.id === id);
+    if (entry) Object.assign(entry, fields);
+    else list.push({ id, name: "", nodes: 0, updated: Date.now(), source: null, edited: true, ...fields });
+    store(INDEX_KEY, JSON.stringify(list));
+  }
+  function readNet(id) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(netKey(id)));
       if (saved && Array.isArray(saved.nodes)) return saved;
     } catch {}
-    return BNDemos[0].build();
+    return null;
+  }
+  const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const byRecent = (list) => [...list].sort((a, b) => b.updated - a.updated);
+
+  // Picks the network this tab starts with, creating the first one on a first visit.
+  function startNetwork() {
+    if (!readIndex().length) {
+      let old = null;
+      try { old = JSON.parse(localStorage.getItem(OLD_NET_KEY)); } catch {}
+      if (!(old && Array.isArray(old.nodes))) old = null;
+      const id = newId();
+      const first = old || BNDemos[0].build();
+      store(netKey(id), JSON.stringify(first));
+      if (old && localStorage.getItem(OLD_EVIDENCE_KEY)) store(evidenceKey(id), localStorage.getItem(OLD_EVIDENCE_KEY));
+      updateEntry(id, { name: first.name, nodes: first.nodes.length, source: old ? null : "demo:" + BNDemos[0].id, edited: !!old });
+      localStorage.removeItem(OLD_NET_KEY);
+      localStorage.removeItem(OLD_EVIDENCE_KEY);
+    }
+    const ids = [sessionStorage.getItem(CURRENT_KEY), localStorage.getItem(LAST_KEY), ...byRecent(readIndex()).map((e) => e.id)];
+    enterNetwork(ids.find((id) => id && readNet(id)));
+  }
+
+  // Makes network `id` the one being edited, keeping the undo history of the one it replaces.
+  function enterNetwork(id) {
+    if (netId && netId !== id) histories.set(netId, { undo: undoStack, redo: redoStack });
+    ({ undo: undoStack, redo: redoStack } = histories.get(id) || { undo: [], redo: [] });
+    histories.delete(id);
+    netId = id;
+    net = readNet(id) || M.createNetwork(untitledName());
+    try { evidence = new Map(JSON.parse(localStorage.getItem(evidenceKey(id))) || []); } catch { evidence = new Map(); }
+    sessionStorage.setItem(CURRENT_KEY, id);
+    store(LAST_KEY, id);
+  }
+
+  // Switches the editor to another saved network. A blank network being left (no variables and
+  // nothing to undo) is deleted rather than kept in the list.
+  function switchNetwork(id) {
+    if (id === netId) return;
+    const left = netId;
+    const blank = !net.nodes.length && !undoStack.length && !redoStack.length;
+    hideSoftEditor();
+    importBefore = null;
+    enterNetwork(id);
+    if (blank && left) removeNetwork(left);
+    inferenceCache = null;
+    selNodes = new Set();
+    selArc = null;
+    refreshNetwork();
+  }
+
+  function refreshNetwork() {
+    render();
+    renderPanel();
+    cpt.render(cptNodeId());
+    updateButtons();
+    updateNetworkButton();
+    fit();
+  }
+
+  function removeNetwork(id) {
+    localStorage.removeItem(netKey(id));
+    localStorage.removeItem(evidenceKey(id));
+    histories.delete(id);
+    store(INDEX_KEY, JSON.stringify(readIndex().filter((e) => e.id !== id)));
+  }
+
+  function untitledName() {
+    const names = new Set(readIndex().map((e) => e.name));
+    for (let i = 1; ; i++) if (!names.has(i === 1 ? "Untitled" : `Untitled ${i}`)) return i === 1 ? "Untitled" : `Untitled ${i}`;
+  }
+
+  // Opens `n` as a network of its own, leaving the current one saved. It takes the place of the
+  // current network when that one is blank, or of an unedited copy opened from the same
+  // `source` (a link or demo), so reopening a link doesn't pile up copies.
+  function openNetwork(n, source = null) {
+    const blank = netId && !net.nodes.length && !undoStack.length && !redoStack.length;
+    const reuse = (source && readIndex().find((e) => e.source === source && !e.edited)) || (blank ? { id: netId } : null);
+    const id = reuse ? reuse.id : newId();
+    store(netKey(id), JSON.stringify(n));
+    localStorage.removeItem(evidenceKey(id));
+    updateEntry(id, { name: n.name, nodes: n.nodes.length, updated: Date.now(), source, edited: false });
+    if (id === netId) {
+      netId = null; // re-enter it with a fresh history
+      undoStack = [];
+      redoStack = [];
+    }
+    histories.delete(id);
+    hideSoftEditor();
+    importBefore = null;
+    enterNetwork(id);
+    inferenceCache = null;
+    selNodes = new Set();
+    selArc = null;
+    refreshNetwork();
+  }
+
+  function deleteNetwork(id) {
+    const entry = readIndex().find((e) => e.id === id);
+    if (!entry || !confirm(`Delete “${entry.name || "Untitled"}”? This can't be undone.`)) return;
+    removeNetwork(id);
+    if (id !== netId) return;
+    netId = null;
+    undoStack = [];
+    redoStack = [];
+    const next = byRecent(readIndex())[0];
+    if (next) switchNetwork(next.id);
+    else openNetwork(M.createNetwork(untitledName()));
   }
 
   function save() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(net));
+    store(netKey(netId), JSON.stringify(net));
+    updateEntry(netId, { name: net.name, nodes: net.nodes.length, updated: Date.now() });
+    updateNetworkButton();
   }
 
   // Records the current state for undo. Call before mutating `net`.
@@ -56,6 +201,7 @@
     undoStack.push(snapshot);
     if (undoStack.length > 300) undoStack.shift();
     redoStack = [];
+    updateEntry(netId, { edited: true });
     updateButtons();
   }
 
@@ -306,7 +452,8 @@
   }
 
   function saveEvidence() {
-    localStorage.setItem(EVIDENCE_KEY, JSON.stringify([...evidenceIndices()].map(([id, v]) => [id, typeof v === "object" ? v : M.getNode(net, id).labels[v]])));
+    updateEntry(netId, { edited: true });
+    store(evidenceKey(netId), JSON.stringify([...evidenceIndices()].map(([id, v]) => [id, typeof v === "object" ? v : M.getNode(net, id).labels[v]])));
   }
 
   function setEvidence(next) {
@@ -1242,9 +1389,10 @@
       toast("This link's network is damaged (it may have been cut short when it was copied)");
       return;
     }
-    if (await importFile(new File([code], "network.py"))) {
-      toast(`Loaded ${net.nodes.length} variables from the link (Ctrl+Z to go back)`);
-    }
+    // The source names the link by a hash of it, since the link itself can be very long.
+    let h = 2166136261;
+    for (let i = 0; i < hash.length; i++) h = Math.imul(h ^ hash.charCodeAt(i), 16777619);
+    await importLink(new File([code], "network.py"), "net:" + (h >>> 0).toString(36));
   }
   window.addEventListener("hashchange", loadFromHash);
 
@@ -1332,9 +1480,32 @@
     const head = new TextDecoder().decode(bytes.subarray(0, 512));
     const name = bytes[0] === 0x89 && head.startsWith("PNG", 1) ? "network.png"
       : /^\s*(<\?xml[^>]*>\s*)?<svg\b/.test(head) ? "network.svg" : "network.py";
-    if (await importFile(new File([bytes], name))) {
-      toast(`Loaded ${net.nodes.length} variables from the link (Ctrl+Z to go back)`);
+    await importLink(new File([bytes], name), "src:" + src);
+  }
+
+  // Imports a linked file as a network of its own, so opening a link never replaces other work.
+  // Edits to it are saved like any network's.
+  async function importLink(file, source) {
+    const before = netId;
+    openNetwork(M.createNetwork(untitledName()), source);
+    if (!(await importFile(file))) {
+      // Nothing was imported. A blank current network that was reused just stays as it was.
+      if (netId === before) { updateEntry(netId, { source: null }); return; }
+      removeNetwork(netId);
+      netId = null;
+      const back = before && readNet(before) ? before : byRecent(readIndex())[0]?.id;
+      if (back) switchNetwork(back);
+      else openNetwork(M.createNetwork(untitledName()));
+      return;
     }
+    // A fresh copy of the link: nothing to undo, and reopening the link may replace it until it's edited.
+    undoStack = [];
+    redoStack = [];
+    importBefore = null;
+    $("#import-undo").hidden = true;
+    updateEntry(netId, { edited: false });
+    updateButtons();
+    toast(`Opened “${net.name}” from the link (${net.nodes.length} variables). Your other networks are saved in the network menu.`);
   }
 
   // Editing the code after an import offers to import it again.
@@ -1354,11 +1525,11 @@
   // ------------------------------------------------------------ toolbar
 
   const actions = {
+    networks: () => toggleNetworksMenu(),
     new: () => {
-      if (net.nodes.length && !confirm("Start a new empty network? (You can undo this.)")) return;
-      clearEvidence();
-      change(() => { net = M.createNetwork("BN"); });
-      select([]);
+      toggleNetworksMenu(false);
+      openNetwork(M.createNetwork(untitledName()));
+      toast(`Started “${net.name}”. Your other networks are saved in this menu.`);
     },
     import: openImport,
     demo: () => toggleDemoMenu(),
@@ -1410,6 +1581,51 @@
     return toggle;
   }
   const toggleDemoMenu = menu(demoMenu, "demo");
+
+  // The network menu lists the saved networks, most recently edited first. It's rebuilt from
+  // storage each time it opens, so it shows networks other tabs have added.
+  const networksMenu = $("#networks-menu");
+  const toggleNetworksMenuRaw = menu(networksMenu, "networks");
+  function toggleNetworksMenu(open = networksMenu.hidden) {
+    if (open) renderNetworksMenu();
+    toggleNetworksMenuRaw(open);
+  }
+  const ago = (t) => {
+    const s = (Date.now() - t) / 1000;
+    const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+    if (s < 60) return "just now";
+    if (s < 3600) return rtf.format(-Math.round(s / 60), "minute");
+    if (s < 86400) return rtf.format(-Math.round(s / 3600), "hour");
+    return rtf.format(-Math.round(s / 86400), "day");
+  };
+  function renderNetworksMenu() {
+    const rows = byRecent(readIndex()).map((e) => {
+      const current = e.id === netId;
+      const from = e.source && e.source.startsWith("demo:") ? "demo" : e.source ? "from a link" : "";
+      const meta = [`${e.nodes} variable${e.nodes === 1 ? "" : "s"}`, from, `edited ${ago(e.updated)}`].filter(Boolean).join(" · ");
+      return `<div class="net-row${current ? " current" : ""}">
+        <button role="menuitemradio" aria-checked="${current}" data-net="${esc(e.id)}"><b>${esc(e.name || "Untitled")}</b><span>${esc(meta)}</span></button>
+        <button class="net-delete" data-delete-net="${esc(e.id)}" title="Delete this network" aria-label="Delete ${esc(e.name || "Untitled")}">✕</button>
+      </div>`;
+    });
+    networksMenu.innerHTML = `<button role="menuitem" data-action="new"><b>New network</b><span>Start an empty one; the others stay saved</span></button><div class="menu-sep"></div>` + rows.join("");
+  }
+  networksMenu.addEventListener("click", (e) => {
+    const del = e.target.closest("[data-delete-net]");
+    if (del) {
+      deleteNetwork(del.dataset.deleteNet);
+      if (readIndex().length) { renderNetworksMenu(); networksMenu.querySelector("button").focus(); }
+      return;
+    }
+    const b = e.target.closest("[data-net]");
+    if (!b) return;
+    toggleNetworksMenu(false);
+    switchNetwork(b.dataset.net);
+  });
+  function updateNetworkButton() {
+    $("#net-switch-name").textContent = net.name || "Untitled";
+    document.querySelector('[data-action="networks"]').title = `${net.name || "Untitled"}: switch between your saved networks, or start a new one`;
+  }
   const toggleShareMenu = menu($("#share-menu"), "share");
   if (BNGist.available()) {
     const b = document.querySelector('[data-action="share"]');
@@ -1423,11 +1639,8 @@
     if (!b) return;
     const demo = BNDemos.find((d) => d.id === b.dataset.demo);
     toggleDemoMenu(false);
-    clearEvidence();
-    change(() => { net = demo.build(); });
-    select([]);
-    fit();
-    toast(`Loaded the ${demo.label} demo (Ctrl+Z to go back)`);
+    openNetwork(demo.build(), "demo:" + demo.id);
+    toast(`Opened the ${demo.label} demo. Your other networks are saved in the network menu.`);
   });
 
   document.addEventListener("click", (e) => {
@@ -1448,7 +1661,8 @@
     onLiveEdit: () => { inferenceCache = null; render(); },
   });
 
-  net = load();
+  startNetwork();
+  updateNetworkButton();
   document.querySelector('[data-action="probs"]').setAttribute("aria-pressed", showProbs);
   render();
   renderPanel();
