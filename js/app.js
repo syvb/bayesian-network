@@ -52,16 +52,19 @@
   }
 
   // Records the current state for undo. Call before mutating `net`.
-  function checkpoint() {
-    undoStack.push(JSON.stringify(net));
+  function checkpoint(snapshot = JSON.stringify(net)) {
+    undoStack.push(snapshot);
     if (undoStack.length > 300) undoStack.shift();
     redoStack = [];
     updateButtons();
   }
 
+  // Runs fn, which mutates `net`, as one undo step. Nothing is recorded when fn leaves the network
+  // as it was (for example a refused arc reversal), so Undo and Redo keep what they had.
   function change(fn) {
-    checkpoint();
+    const before = JSON.stringify(net);
     const result = fn();
+    if (JSON.stringify(net) !== before) checkpoint(before);
     refresh();
     return result;
   }
@@ -1141,7 +1144,7 @@
       return false;
     }
     // Picking another network re-imports, so only the first import in this dialog records the state to go back to.
-    if (!importBefore) importBefore = { depth: undoStack.length, evidence };
+    if (!importBefore) importBefore = { net: JSON.stringify(net), evidence };
     clearEvidence();
     change(() => { net = imported; });
     if (savedEvidence) {
@@ -1161,7 +1164,10 @@
 
   function undoImport() {
     if (!importBefore) return;
-    while (undoStack.length > importBefore.depth) undo();
+    // Restores the saved network rather than undoing a counted number of steps: the history may
+    // be full, and then the import didn't make it any longer.
+    const saved = importBefore.net;
+    change(() => { net = JSON.parse(saved); });
     setEvidence(importBefore.evidence);
     fit();
     importBefore = null;

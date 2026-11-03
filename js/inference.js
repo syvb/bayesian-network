@@ -157,7 +157,8 @@
   //   {target: [...]}: the node's probabilities after all the evidence should be exactly these
   //     (Jeffrey's rule)).
   // Target evidence is turned into the likelihoods that produce it, found by iterative
-  // proportional fitting, one target at a time; with one target node this takes a single step.
+  // proportional fitting, one target at a time (one step for a single target), finished with damped
+  // Newton steps when the targets are strongly coupled.
   // Returns {marginals: Map(id -> number[]), pEvidence, likelihoods: Map(id -> number[])} or {error}.
   // pEvidence covers only the hard and likelihood evidence.
   function posteriors(net, evidence = new Map()) {
@@ -169,11 +170,11 @@
     const ev = new Map(plain);
     for (const [id, { target }] of targets) ev.set(id, target.map((q) => (q > 0 ? 1 : 0)));
     const targetIds = new Set(targets.map(([id]) => id));
-    // Fit one target at a time against fresh marginals: adjusting all of them from the same
-    // marginals overshoots when targets depend on each other (e.g. a node that copies another).
+    // First fit one target at a time against fresh marginals (iterative proportional fitting).
+    // Adjusting all of them from the same marginals overshoots when targets depend on each other.
     const fitted = (r) => targets.every(([id, { target }]) => r.marginals.get(id).every((p, s) => Math.abs(p - target[s]) <= 1e-9));
     let converged = false;
-    for (let it = 0; it < 500 && !converged; it++) {
+    for (let it = 0; it < 30 && !converged; it++) {
       for (const [id, { target }] of targets) {
         const r = exact(net, ev, targetIds);
         if (r.error) return impossibleTargets(net, targets, r.error);
@@ -189,12 +190,103 @@
       if (r.error) return impossibleTargets(net, targets, r.error);
       converged = fitted(r);
     }
+    // Strongly coupled targets (a node that almost copies another) make that fitting crawl, so
+    // finish with damped Newton steps on the log-likelihoods.
+    if (!converged) {
+      const res = newtonFit(net, ev, targets, targetIds);
+      if (res.error) return impossibleTargets(net, targets, res.error);
+      converged = res.converged;
+    }
     if (!converged) return { error: "These target probabilities can't all hold at once: they contradict each other or the other evidence." };
     const r = exact(net, ev);
     if (r.error) return r;
     r.pEvidence = base.pEvidence;
     r.likelihoods = new Map(targets.map(([id]) => [id, ev.get(id)]));
     return r;
+  }
+
+  // Levenberg-Marquardt on x = log-likelihoods of the target states with nonzero target, except
+  // one reference state per node (only likelihood ratios matter). The residual is marginal minus
+  // target for the same states; d marginal(i,s) / d x(j,u) = P(i=s, j=u) - P(i=s) P(j=u), with the
+  // joint read from posteriors given j = u. Works in place on `ev`.
+  function newtonFit(net, ev, targets, targetIds) {
+    const vars = []; // [node id, state] per unknown
+    for (const [id, { target }] of targets) {
+      const ref = target.indexOf(Math.max(...target));
+      target.forEach((q, s) => { if (q > 0 && s !== ref) vars.push([id, s]); });
+    }
+    const goal = new Map(targets.map(([id, { target }]) => [id, target]));
+    const n = vars.length;
+    if (!n) return { converged: true };
+    let x = vars.map(([id, s]) => Math.log(ev.get(id)[s] / Math.max(...ev.get(id))));
+    const apply = (xs) => {
+      for (const [id, { target }] of targets) {
+        const ref = target.indexOf(Math.max(...target));
+        ev.set(id, target.map((q, s) => (q > 0 ? (s === ref ? 1 : 0) : 0)));
+      }
+      vars.forEach(([id, s], k) => { ev.get(id)[s] = Math.exp(xs[k]); });
+    };
+    const residual = () => {
+      const r = exact(net, ev, targetIds);
+      if (r.error) return { error: r.error };
+      const f = vars.map(([id, s]) => r.marginals.get(id)[s] - goal.get(id)[s]);
+      const worst = Math.max(...targets.map(([id, { target }]) => Math.max(...r.marginals.get(id).map((p, s) => Math.abs(p - target[s])))));
+      return { r, f, norm: f.reduce((a, b) => a + b * b, 0), worst };
+    };
+    apply(x);
+    let cur = residual();
+    if (cur.error) return cur;
+    let mu = 1e-3;
+    for (let it = 0; it < 200 && cur.worst > 1e-9; it++) {
+      // Jacobian
+      const q = cur.r.marginals, J = vars.map(() => new Array(n).fill(0));
+      const byNode = new Map();
+      vars.forEach(([id, u], k) => { if (!byNode.has(id)) byNode.set(id, []); byNode.get(id).push([u, k]); });
+      for (const [j, cols] of byNode) {
+        const saved = ev.get(j);
+        for (const [u, k] of cols) {
+          ev.set(j, u);
+          const c = exact(net, ev, targetIds);
+          ev.set(j, saved);
+          if (c.error) continue; // P(j = u) is 0 here, so the column is 0
+          vars.forEach(([i, s], row) => { J[row][k] = q.get(j)[u] * c.marginals.get(i)[s] - q.get(i)[s] * q.get(j)[u]; });
+        }
+      }
+      const JtJ = vars.map((_, a) => vars.map((_, b) => J.reduce((t, row) => t + row[a] * row[b], 0)));
+      const Jtf = vars.map((_, a) => J.reduce((t, row, k) => t + row[a] * cur.f[k], 0));
+      let accepted = false;
+      for (let tries = 0; tries < 30 && !accepted; tries++) {
+        const A = JtJ.map((row, a) => row.map((v, b) => v + (a === b ? mu * (JtJ[a][a] + 1e-12) + 1e-15 : 0)));
+        const d = solve(A, Jtf.map((v) => -v));
+        const nx = x.map((v, k) => v + Math.max(-20, Math.min(20, d[k])));
+        apply(nx);
+        const next = residual();
+        if (!next.error && next.norm < cur.norm) { x = nx; cur = next; mu = Math.max(1e-12, mu / 4); accepted = true; }
+        else mu *= 4;
+      }
+      if (!accepted) { apply(x); break; }
+    }
+    apply(x);
+    return { converged: cur.worst <= 1e-9 };
+  }
+
+  // Gaussian elimination with partial pivoting.
+  function solve(A, b) {
+    const n = b.length, m = A.map((row, i) => [...row, b[i]]);
+    for (let c = 0; c < n; c++) {
+      let p = c;
+      for (let r = c + 1; r < n; r++) if (Math.abs(m[r][c]) > Math.abs(m[p][c])) p = r;
+      [m[c], m[p]] = [m[p], m[c]];
+      if (!m[c][c]) continue;
+      for (let r = c + 1; r < n; r++) { const f = m[r][c] / m[c][c]; for (let k = c; k <= n; k++) m[r][k] -= f * m[c][k]; }
+    }
+    const x = new Array(n).fill(0);
+    for (let r = n - 1; r >= 0; r--) {
+      let t = m[r][n];
+      for (let k = r + 1; k < n; k++) t -= m[r][k] * x[k];
+      x[r] = m[r][r] ? t / m[r][r] : 0;
+    }
+    return x;
   }
 
   function impossibleTargets(net, targets) {

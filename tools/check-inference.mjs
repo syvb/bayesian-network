@@ -20,6 +20,12 @@ const copyNet = M.createNetwork("copy");
   b.cpt = [1, 0, 0, 1];
   nets.push(copyNet);
 }
+// The same with a near-copy (B follows A 99.99% of the time), where fitting one target at a time
+// converges far too slowly on its own.
+const nearCopyNet = JSON.parse(JSON.stringify(copyNet));
+nearCopyNet.name = "near copy";
+nearCopyNet.nodes[1].cpt = [0.9999, 0.0001, 0.0001, 0.9999];
+nets.push(nearCopyNet);
 const shuffled = (xs) => xs.map((x) => [Math.random(), x]).sort((a, b) => a[0] - b[0]).map(([, x]) => x);
 
 const cases = [];
@@ -31,10 +37,10 @@ nets.forEach((net, i) => {
   const [target, other] = shuffled(net.nodes);
   const q = target.labels.map(() => 0.05 + Math.random());
   evidences.push(new Map([[target.id, { target: q.map((x) => x / q.reduce((a, b) => a + b)) }], [other.id, Math.floor(Math.random() * other.labels.length)]]));
-  if (net === copyNet) evidences.push(new Map(net.nodes.map((n) => [n.id, { target: [0.7, 0.3] }])));
+  if (net === copyNet || net === nearCopyNet) evidences.push(new Map(net.nodes.map((n) => [n.id, { target: [0.7, 0.3] }])));
   evidences.forEach((ev, j) => {
     const r = I.posteriors(net, ev);
-    if (net === copyNet && j === evidences.length - 1 && r.error) { console.log("compatible targets were rejected:", r.error); process.exitCode = 1; }
+    if ((net === copyNet || net === nearCopyNet) && j === evidences.length - 1 && r.error) { console.log("compatible targets were rejected:", r.error); process.exitCode = 1; }
     // target probabilities, when accepted, must be what the nodes end up with
     for (const [id, v] of ev) {
       if (!r.error && v && v.target && v.target.some((q, s) => Math.abs(q - r.marginals.get(id)[s]) > 1e-8)) { console.log("a target wasn't reached:", M.getNode(net, id).name, v.target, r.marginals.get(id)); process.exitCode = 1; }
