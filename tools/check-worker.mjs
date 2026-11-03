@@ -26,15 +26,21 @@ const call = (body, { origin = ORIGIN, e = env, type = "application/json" } = {}
 let failures = 0;
 const check = (name, ok) => { if (!ok) failures++; console.log(`${ok ? "ok  " : "FAIL"} ${name}`); };
 
-github = { access_token: "gho_token", token_type: "bearer", scope: "gist" };
+github = { access_token: "ghu_token", token_type: "bearer", expires_in: 28800, refresh_token: "ghr_refresh", refresh_token_expires_in: 15897600, scope: "" };
 let res = await call({ code: "abc123", code_verifier: verifier });
-check("returns the token", res.status === 200 && (await res.json()).access_token === "gho_token");
+const got = await res.clone().json();
+check("returns the token", res.status === 200 && got.access_token === "ghu_token" && got.expires_in === 28800);
+check("never returns the refresh token", !JSON.stringify(got).includes("ghr_"));
 check("token response is not cacheable", res.headers.get("Cache-Control") === "no-store");
 check("CORS allows only the editor", res.headers.get("Access-Control-Allow-Origin") === ORIGIN);
 check("sends the configured client, secret and callback with the verifier",
   sent.url === "https://github.com/login/oauth/access_token" && sent.body.client_id === "client-id"
   && sent.body.client_secret === "client-secret" && sent.body.redirect_uri === "https://iter.ca/bn/"
   && sent.body.code === "abc123" && sent.body.code_verifier === verifier);
+
+github = { access_token: "gho_forever", token_type: "bearer", scope: "gist" };
+res = await call({ code: "abc123", code_verifier: verifier });
+check("refuses a token that doesn't expire", res.status === 502 && !(await res.text()).includes("gho_"));
 
 github = { error: "bad_verification_code", error_description: "The code passed is incorrect or expired." };
 res = await call({ code: "abc123", code_verifier: verifier });

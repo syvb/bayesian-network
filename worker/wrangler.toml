@@ -5,9 +5,9 @@ compatibility_date = "2026-10-01"
 workers_dev = true
 
 [vars]
-# The GitHub OAuth App's client ID (public). Also set it as clientId in js/gist.js.
+# The GitHub App's client ID (public; starts with Iv). Also set it as clientId in js/gist.js.
 GITHUB_CLIENT_ID = ""
-# The OAuth App's callback URL, exactly as registered: the editor page.
+# The GitHub App's callback URL, exactly as registered: the editor page.
 REDIRECT_URI = "https://iter.ca/bn/"
 # The only origin allowed to call /token (no path, no trailing slash).
 ALLOWED_ORIGIN = "https://iter.ca"

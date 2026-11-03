@@ -1,11 +1,14 @@
-// Swaps a GitHub OAuth code for a user token, for the BN Editor's "Publish to GitHub Gist".
+// Swaps a GitHub App sign-in code for a user token, for the BN Editor's "Publish to GitHub Gist".
 //
-// GitHub's token endpoint needs the OAuth App's client secret and doesn't allow cross-origin
+// GitHub's token endpoint needs the GitHub App's client secret and doesn't allow cross-origin
 // requests, so the editor (a static page) can't call it itself. This Worker is the only server
 // in the flow: it stores nothing, logs nothing, and returns the token to the editor, which
 // creates the gist directly with GitHub. Setup: README.md in this directory.
 //
-// POST /token  {"code": "...", "code_verifier": "..."}  ->  {"access_token", "token_type", "scope"}
+// POST /token  {"code": "...", "code_verifier": "..."}  ->  {"access_token", "token_type", "expires_in"}
+//
+// Only tokens that expire (8 hours) are handed out. GitHub's refresh token, which could renew
+// one for 6 months, is dropped here and never reaches the browser.
 
 const MAX_BODY = 1024; // bytes; a real request is about 120
 const CODE = /^[\w.-]{1,256}$/;
@@ -72,7 +75,10 @@ export default {
     // GitHub reports a bad or expired code as 200 with an error field.
     if (data.error) return reply(400, { error: /^[a-z_]{1,64}$/.test(data.error) ? data.error : "oauth_error" });
     if (typeof data.access_token !== "string") return reply(502, { error: "github_error" });
-    return reply(200, { access_token: data.access_token, token_type: data.token_type, scope: data.scope }, { Pragma: "no-cache" });
+    // The editor asks for offline_access, so a token without an expiry means the client ID isn't
+    // a GitHub App's. Refuse rather than hand out a token that never expires.
+    if (!(data.expires_in > 0)) return reply(502, { error: "token_does_not_expire" });
+    return reply(200, { access_token: data.access_token, token_type: data.token_type, expires_in: data.expires_in }, { Pragma: "no-cache" });
   },
 };
 

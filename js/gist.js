@@ -1,18 +1,20 @@
-// Sharing through GitHub gists: sign in with GitHub (OAuth with PKCE), create a secret gist
+// Sharing through GitHub gists: sign in with GitHub (a GitHub App's user sign-in, with PKCE),
+// create a secret gist
 // holding the network's pyAgrum export, and link to its revision-specific raw file with ?src=.
 //
 // The only server involved is a small Cloudflare Worker (worker/) that swaps the OAuth code for a
 // token, because GitHub's token endpoint needs the app's client secret and doesn't allow
 // cross-origin requests. The gist itself is created straight from the browser. The token is kept
-// in this module's memory only, so it's gone when the tab closes or reloads.
+// in this module's memory only, so it's gone when the tab closes or reloads, and it expires on
+// GitHub after 8 hours. Its refresh token never leaves the Worker.
 "use strict";
 
 const BNGist = (() => {
   // Leave clientId or tokenUrl empty to turn Gist sharing off. See worker/README.md for setup.
   const config = {
-    clientId: "", // the GitHub OAuth App's client ID (public)
+    clientId: "", // the GitHub App's client ID (public; starts with Iv)
     tokenUrl: "", // the Worker's token endpoint, e.g. https://bn-editor-oauth.<account>.workers.dev/token
-    redirectUri: "https://iter.ca/bn/", // the OAuth App's callback URL: this page
+    redirectUri: "https://iter.ca/bn/", // the GitHub App's callback URL: this page
   };
 
   const PENDING_KEY = "bn-editor-gist-pending";
@@ -41,7 +43,10 @@ const BNGist = (() => {
     url.search = new URLSearchParams({
       client_id: config.clientId,
       redirect_uri: config.redirectUri,
-      scope: "gist",
+      // GitHub Apps get their permissions (here just Gists) from the app's settings, not from
+      // scopes. offline_access is the one scope they take: it makes the token expire in 8 hours
+      // even if the app's token expiration setting is off.
+      scope: "offline_access",
       state,
       code_challenge: await challengeFor(verifier),
       code_challenge_method: "S256",
@@ -88,9 +93,6 @@ const BNGist = (() => {
     if (!res.ok || typeof data.access_token !== "string") {
       return { error: data.error === "bad_verification_code" ? "The GitHub sign-in expired. Nothing was published; try again." : "GitHub sign-in failed. Nothing was published." };
     }
-    if (!String(data.scope || "").split(/[ ,]+/).includes("gist")) {
-      return { error: "GitHub didn't grant permission to create gists. Nothing was published." };
-    }
     token = data.access_token;
     return { share: pending.share };
   }
@@ -118,6 +120,9 @@ const BNGist = (() => {
     if (res.status === 401) {
       token = null;
       throw new ShareError("GitHub no longer accepts this sign-in. Nothing was published; sign in again.");
+    }
+    if (res.status === 403 || res.status === 404) {
+      throw new ShareError("GitHub didn't allow this editor to create gists. Nothing was published.");
     }
     if (!res.ok) throw new ShareError(`GitHub refused to create the gist (HTTP ${res.status}${data.message ? `: ${data.message}` : ""}).`);
     const rawUrl = data.files && data.files[filename] && data.files[filename].raw_url;
