@@ -74,6 +74,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft
   background: var(--surface);
 }
 .brand { margin-right: 8px; }
+.brand abbr { text-decoration: none; }
 .sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
 .grow { flex: 1; }
 .hint, .muted { color: var(--muted); font-size: 12px; }

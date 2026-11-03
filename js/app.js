@@ -833,7 +833,7 @@
     panel.innerHTML = `
       <h2>Network</h2>
       <div class="field"><label for="net-name">Name</label><input id="net-name" type="text" value="${esc(net.name)}"></div>
-      <p class="muted">${net.nodes.length} variables, ${net.arcs.length} arcs.</p>
+      <p class="muted">A Bayesian network with ${net.nodes.length} variables and ${net.arcs.length} arcs.</p>
       ${bad.length ? `<h3>Problems</h3><ul class="warn">${bad.map((n) => `<li><span class="link" data-select="${n.id}">${esc(n.name)}</span>: CPT rows do not sum to 1</li>`).join("")}</ul>` : ""}
       <h3>Editing</h3>
       <dl class="help">
