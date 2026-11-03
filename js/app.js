@@ -1207,8 +1207,6 @@
     return url;
   }
 
-  // Loads the network from the file named by ?src=<url> (.py, or a .png/.svg exported here).
-  // Reloading the same tab keeps local edits instead of fetching the file again.
   // ------------------------------------------------------------ #net= links
 
   // The network travels in the URL hash as its pyAgrum export (with layout and evidence),
@@ -1224,7 +1222,8 @@
     const url = location.href.replace(/[?#].*$/, "") + hash;
     try {
       await navigator.clipboard.writeText(url);
-      toast(`Copied a link with the network in it (${url.length.toLocaleString()} characters)`);
+      const long = url.length > 8000 && BNGist.available() ? ". That's long: Share ▾ › Publish to GitHub Gist makes a short one" : "";
+      toast(`Copied a link with the network in it (${url.length.toLocaleString()} characters)${long}`);
     } catch {
       prompt("Copy this link:", url);
     }
@@ -1249,6 +1248,70 @@
   }
   window.addEventListener("hashchange", loadFromHash);
 
+  // ------------------------------------------------------------ GitHub gists
+
+  function openGist() {
+    if (!net.nodes.length) { toast("The network is empty"); return; }
+    showGist({});
+    $("#gist-dialog").showModal();
+    $("#gist-publish").focus();
+  }
+
+  // state: {} (about to publish), {busy}, {error} or {done: {gistUrl, link, copied}}.
+  function showGist(state) {
+    const done = state.done;
+    $("#gist-intro").hidden = !!done;
+    $("#gist-result").hidden = !done;
+    const status = $("#gist-status");
+    const msg = state.busy || state.error || (done && (done.copied ? "✓ Published, and the link is copied to the clipboard." : "✓ Published. Copy the link below."));
+    status.hidden = !msg;
+    status.className = "import-result " + (state.error ? "failed" : "ok");
+    status.innerHTML = done ? `<b>${esc(msg)}</b>` : esc(msg || "");
+    if (done) {
+      $("#gist-link").value = done.link;
+      $("#gist-page").href = done.gistUrl;
+    }
+    const publish = $("#gist-publish");
+    publish.hidden = !!done;
+    publish.disabled = !!state.busy;
+    publish.textContent = (BNGist.signedIn() ? "Publish" : "Sign in with GitHub and publish") + (state.error ? " again" : "");
+    $("#gist-copy").hidden = !done;
+    $("#gist-close").textContent = done ? "Close" : "Cancel";
+    $("#gist-sign-out").hidden = !BNGist.signedIn();
+  }
+
+  // Publishes `share` (the current network by default), signing in first if needed, which
+  // leaves the page; finishGistSignIn picks up when GitHub sends the user back.
+  async function publishGist(share = { code: exportCode(), filename: fileName(".py"), description: `${net.name || "Network"}: a Bayesian network shared from the BN Editor` }) {
+    if (!BNGist.signedIn()) {
+      showGist({ busy: "Opening GitHub…" });
+      await BNGist.signInAndShare(share);
+      return;
+    }
+    showGist({ busy: "Publishing…" });
+    try {
+      const { gistUrl, rawUrl } = await BNGist.publish(share);
+      const link = BNGist.linkFor(rawUrl);
+      let copied = true;
+      try { await navigator.clipboard.writeText(link); } catch { copied = false; }
+      showGist({ done: { gistUrl, link, copied } });
+      $("#gist-link").select();
+    } catch (e) {
+      if (!(e instanceof BNGist.ShareError)) throw e;
+      showGist({ error: e.message });
+    }
+  }
+
+  async function finishGistSignIn() {
+    const result = await BNGist.finishSignIn();
+    if (!result) return;
+    $("#gist-dialog").showModal();
+    if (result.error) showGist({ error: result.error });
+    else await publishGist(result.share);
+  }
+
+  // Loads the network from the file named by ?src=<url> (.py, or a .png/.svg exported here).
+  // Reloading the same tab keeps local edits instead of fetching the file again.
   async function loadFromLink() {
     const src = new URLSearchParams(location.search).get("src");
     if (!src || sessionStorage.getItem(SRC_KEY) === src) return;
@@ -1301,7 +1364,12 @@
     demo: () => toggleDemoMenu(),
     probs: toggleProbs,
     export: openExport,
-    share: shareLink,
+    share: () => (BNGist.available() ? toggleShareMenu() : shareLink()),
+    "copy-link": () => { toggleShareMenu(false); shareLink(); },
+    gist: () => { toggleShareMenu(false); openGist(); },
+    "gist-publish": () => publishGist(),
+    "gist-copy": async () => { await navigator.clipboard.writeText($("#gist-link").value); toast("Copied the link"); },
+    "gist-sign-out": () => { BNGist.signOut(); showGist({}); toast("Forgot the GitHub sign-in"); },
     undo, redo,
     add: () => addNodeShortcut(true),
     layout: () => { change(() => M.autoLayout(net)); fit(); },
@@ -1315,10 +1383,40 @@
   };
   const demoMenu = $("#demo-menu");
   demoMenu.innerHTML = BNDemos.map((d) => `<button role="menuitem" data-demo="${d.id}"><b>${esc(d.label)}</b><span>${esc(d.detail)}</span></button>`).join("");
-  function toggleDemoMenu(open = demoMenu.hidden) {
-    demoMenu.hidden = !open;
-    document.querySelector('[data-action="demo"]').setAttribute("aria-expanded", open);
-    if (open) demoMenu.querySelector("button").focus();
+  // A toolbar menu: its button toggles it, arrow keys move through it, Escape or clicking
+  // elsewhere closes it.
+  function menu(el, action) {
+    const button = document.querySelector(`[data-action="${action}"]`);
+    const toggle = (open = el.hidden) => {
+      el.hidden = !open;
+      button.setAttribute("aria-expanded", open);
+      if (open) el.querySelector("button").focus();
+    };
+    el.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // keep arrow keys from moving selected nodes
+      const items = [...el.querySelectorAll("button")];
+      const i = items.indexOf(document.activeElement);
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+      } else if (e.key === "Escape") {
+        toggle(false);
+        button.focus();
+      }
+    });
+    document.addEventListener("pointerdown", (e) => {
+      if (!el.hidden && !el.contains(e.target) && !button.contains(e.target)) toggle(false);
+    });
+    return toggle;
+  }
+  const toggleDemoMenu = menu(demoMenu, "demo");
+  const toggleShareMenu = menu($("#share-menu"), "share");
+  if (BNGist.available()) {
+    const b = document.querySelector('[data-action="share"]');
+    b.textContent = "Share ▾";
+    b.title = "Share the network by link";
+    b.setAttribute("aria-haspopup", "menu");
+    b.setAttribute("aria-expanded", "false");
   }
   demoMenu.addEventListener("click", (e) => {
     const b = e.target.closest("[data-demo]");
@@ -1330,21 +1428,6 @@
     select([]);
     fit();
     toast(`Loaded the ${demo.label} demo (Ctrl+Z to go back)`);
-  });
-  demoMenu.addEventListener("keydown", (e) => {
-    e.stopPropagation(); // keep arrow keys from moving selected nodes
-    const items = [...demoMenu.querySelectorAll("button")];
-    const i = items.indexOf(document.activeElement);
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
-    } else if (e.key === "Escape") {
-      toggleDemoMenu(false);
-      document.querySelector('[data-action="demo"]').focus();
-    }
-  });
-  document.addEventListener("pointerdown", (e) => {
-    if (!demoMenu.hidden && !e.target.closest("#demo-menu, [data-action='demo']")) toggleDemoMenu(false);
   });
 
   document.addEventListener("click", (e) => {
@@ -1372,6 +1455,7 @@
   cpt.render(cptNodeId());
   updateButtons();
   requestAnimationFrame(fit);
+  finishGistSignIn();
   loadFromLink();
   loadFromHash();
 

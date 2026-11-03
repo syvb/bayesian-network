@@ -577,3 +577,10 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 .drag-tip[hidden] { display: none; }
 .drag-tip .tip-change { display: flex; gap: 12px; margin-top: 2px; }
 .drag-tip .sw { margin-right: 4px; }
+
+#gist-dialog { width: min(560px, 92vw); }
+#gist-dialog p { font-size: 13px; line-height: 1.45; margin: 0 0 8px; }
+#gist-dialog .gist-warning { padding: 8px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, #b86e00 45%, transparent); background: color-mix(in srgb, #b86e00 9%, transparent); }
+#gist-link { width: 100%; box-sizing: border-box; margin: 10px 0 6px; padding: 6px 8px; font: 12px ui-monospace, monospace; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
+#gist-page { color: var(--accent); }
+#share-menu { min-width: 330px; }

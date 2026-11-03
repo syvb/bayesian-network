@@ -1,0 +1,27 @@
+# Cloudflare Worker for the editor's GitHub Gist sharing. Setup: README.md in this directory.
+name = "bn-editor-oauth"
+main = "index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[vars]
+# The GitHub OAuth App's client ID (public). Also set it as clientId in js/gist.js.
+GITHUB_CLIENT_ID = ""
+# The OAuth App's callback URL, exactly as registered: the editor page.
+REDIRECT_URI = "https://iter.ca/bn/"
+# The only origin allowed to call /token (no path, no trailing slash).
+ALLOWED_ORIGIN = "https://iter.ca"
+# GITHUB_CLIENT_SECRET is a secret: `npx wrangler secret put GITHUB_CLIENT_SECRET`, never here.
+
+# Per-IP limit on /token. A sign-in makes one request.
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "41001"
+
+  [ratelimits.simple]
+  limit = 10
+  period = 60
+
+# Keep Cloudflare's Workers Logs off: the Worker handles OAuth codes and tokens.
+[observability]
+enabled = false
