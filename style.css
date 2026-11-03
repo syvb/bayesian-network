@@ -156,6 +156,9 @@ ul.warn { padding-left: 18px; margin: 6px 0; max-height: 140px; overflow: auto; 
 .link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 .help dt { font-weight: 600; margin-top: 6px; }
 .help dd { margin: 0 0 0 0; color: var(--muted); }
+.panel-foot { margin-top: 18px; font-size: 12px; }
+.panel-foot a { color: inherit; }
+.panel-foot a:hover { color: var(--accent); }
 kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; background: var(--bg); }
 
 dialog {

@@ -79,3 +79,7 @@ On the pyAgrum side it supports:
 When the code builds several networks, the Import dialog lets you choose which one to load (by default the largest; the first one built if several are equally large). Lines that can't be run are skipped and listed as warnings, as are CPT cells the code never fills (pyAgrum leaves them at 0). `fastBN` CPTs are random, as they are in pyAgrum. Influence diagrams, Markov random fields and `gum.loadBN(file)` aren't supported.
 
 The importer is checked against pyAgrum itself: scripts and notebooks from pyAgrum's documentation and GitHub, and the bnlearn benchmark networks (alarm, hailfinder, andes, pathfinder, link, munin with 1,041 variables, ...) written out as pyAgrum code, import to exactly the CPTs pyAgrum computes.
+
+## License
+
+[Apache License 2.0](LICENSE).
