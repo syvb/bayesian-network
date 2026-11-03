@@ -55,6 +55,8 @@ bn.cpt("wet_grass")[{"sprinkler": "off", "rain": "no"}] = [1, 0]
 # bn-editor-layout: {...}
 ```
 
+**Pictures:** the Export dialog can also download the canvas as a **PNG** or **SVG**, exactly as it's shown. With Probabilities on, that includes each node's probability bars and a line listing the evidence. The pyAgrum code is embedded in the file (an SVG `<metadata>` element or a PNG `iTXt` chunk), so Import, or dropping the image on the canvas, restores the network.
+
 The final comment stores node positions so that re-importing restores the layout.
 
 **Import** (or drop a `.py` file on the canvas) reads a practical subset of Python:

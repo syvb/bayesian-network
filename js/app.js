@@ -778,7 +778,7 @@
         <dt>CPTs</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (with “Keep rows summing to 1” on, the rest of the row is adjusted for you), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
         <dt>Probabilities &amp; evidence</dt><dd>With <b>Probabilities</b> on (<kbd>P</kbd>), every node shows the probability of each of its states, computed exactly from the CPTs. Click a state to observe it (for example “the grass is wet”); all other nodes update to the probabilities given that evidence. Click it again, or use the evidence bar, to clear it. Turn on <b>Soft evidence</b> in the evidence bar to enter likelihoods for a node's states instead of a certain observation.</dd>
         <dt>Delete / duplicate</dt><dd><kbd>Del</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd>. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</dd>
-        <dt>pyAgrum</dt><dd>Export writes <code>import pyagrum as gum</code> code; <kbd>Ctrl</kbd>+<kbd>S</kbd> downloads it. Import accepts that code, hand-written <code>gum.BayesNet</code> code, and <code>gum.fastBN</code>. You can also drop a .py file on the canvas.</dd>
+        <dt>pyAgrum</dt><dd>Export writes <code>import pyagrum as gum</code> code; <kbd>Ctrl</kbd>+<kbd>S</kbd> downloads it. Import accepts that code, hand-written <code>gum.BayesNet</code> code, and <code>gum.fastBN</code>. Export can also save a PNG or SVG picture of the canvas (with probabilities, if shown) that has the network embedded, so the picture can be imported again. You can drop a .py, .png or .svg file on the canvas.</dd>
       </dl>`;
     const nameInput = panel.querySelector("#net-name");
     nameInput.onchange = () => change(() => { net.name = nameInput.value; });
@@ -930,17 +930,55 @@
     return bad.length ? `Warning: CPT rows of ${bad.join(", ")} do not sum to 1.` : "";
   }
 
-  function fileName() {
-    return (net.name || "network").replace(/[^\w-]+/g, "_").replace(/^_+|_+$/g, "") + ".py";
+  function fileName(ext) {
+    return ((net.name || "network").replace(/[^\w-]+/g, "_").replace(/^_+|_+$/g, "") || "network") + ext;
+  }
+
+  function download(blob, name) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
   function downloadPython() {
-    const blob = new Blob([P.exportPython(net)], { type: "text/x-python" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = fileName();
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    download(new Blob([P.exportPython(net)], { type: "text/x-python" }), fileName(".py"));
+  }
+
+  // The canvas as it is shown now (with probabilities and evidence when that view is on), minus
+  // the selection, with the pyAgrum code embedded so the image can be imported again.
+  async function downloadImage(kind) {
+    if (!net.nodes.length) { toast("The network is empty"); return; }
+    const code = P.exportPython(net);
+    const saved = { nodes: selNodes, arc: selArc };
+    selNodes = new Set();
+    selArc = null;
+    render();
+    let caption = null;
+    const ev = showProbs ? evidenceIndices() : new Map();
+    if (ev.size) {
+      const text = "Evidence: " + [...ev].map(([id, v]) => {
+        const n = M.getNode(net, id);
+        return Array.isArray(v) ? `${n.name} ≈ ${v.map((x) => +x.toPrecision(2)).join(" : ")}` : `${n.name} = ${n.labels[v]}`;
+      }).join(", ");
+      caption = { text, width: textWidth(text, "13px system-ui, sans-serif") };
+    }
+    const css = getComputedStyle(document.documentElement);
+    let image;
+    try {
+      image = BNImage.buildSvg(svg, viewport, {
+        code, caption,
+        background: css.getPropertyValue("--bg").trim(),
+        captionColor: css.getPropertyValue("--text").trim(),
+      });
+    } finally {
+      selNodes = saved.nodes;
+      selArc = saved.arc;
+      render();
+    }
+    if (kind === "svg") download(new Blob([image.svg], { type: "image/svg+xml" }), fileName(".svg"));
+    else download(await BNImage.svgToPng(image, code), fileName(".png"));
   }
 
   function openExport() {
@@ -972,7 +1010,9 @@
   }
 
   async function importFile(file) {
-    const text = await file.text();
+    let text = await BNImage.codeFromFile(file);
+    if (text === null) { toast("This image doesn't contain a network exported from this editor"); return; }
+    if (text === undefined) text = await file.text();
     $("#import-code").value = text;
     if (!$("#import-dialog").open) openImport();
     finishImport();
@@ -1021,6 +1061,8 @@
     fit,
     "copy-export": async () => { await navigator.clipboard.writeText($("#export-code").value); toast("Copied to clipboard"); },
     "download-export": downloadPython,
+    "download-svg": () => downloadImage("svg"),
+    "download-png": () => downloadImage("png"),
     "do-import": finishImport,
   };
   const demoMenu = $("#demo-menu");

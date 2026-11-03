@@ -53,12 +53,16 @@
 
   <dialog id="export-dialog">
     <form method="dialog">
-      <h2>Export pyAgrum code</h2>
+      <h2>Export</h2>
       <textarea id="export-code" readonly spellcheck="false"></textarea>
       <p id="export-warnings" class="warn"></p>
+      <p class="muted">PNG and SVG pictures show the canvas as it is now, including each node's probabilities and the evidence when <b>Probabilities</b> is on. They contain the code above, so Import can open them again.</p>
       <div class="dialog-actions">
         <button type="button" data-action="copy-export">Copy</button>
         <button type="button" data-action="download-export">Download .py</button>
+        <span class="sep"></span>
+        <button type="button" data-action="download-png" title="Picture of the canvas as shown now; the network is embedded so the file can be imported again">Download PNG</button>
+        <button type="button" data-action="download-svg" title="Picture of the canvas as shown now; the network is embedded so the file can be imported again">Download SVG</button>
         <span class="grow"></span>
         <button value="close">Close</button>
       </div>
@@ -68,11 +72,11 @@
   <dialog id="import-dialog">
     <form method="dialog">
       <h2>Import pyAgrum code</h2>
-      <p class="muted">Paste Python that builds a <code>gum.BayesNet</code> or calls <code>gum.fastBN</code>. Loops and other control flow are skipped.</p>
+      <p class="muted">Paste Python that builds a <code>gum.BayesNet</code> or calls <code>gum.fastBN</code>. Loops and other control flow are skipped. You can also open a PNG or SVG exported from this editor.</p>
       <textarea id="import-code" spellcheck="false" placeholder='import pyagrum as gum&#10;bn = gum.fastBN("a->b<-c")'></textarea>
       <ul id="import-warnings" class="warn"></ul>
       <div class="dialog-actions">
-        <label class="file-button">Open .py file…<input id="import-file" type="file" accept=".py,text/x-python,text/plain" hidden></label>
+        <label class="file-button">Open file…<input id="import-file" type="file" accept=".py,.png,.svg,text/x-python,text/plain,image/png,image/svg+xml" hidden></label>
         <span class="grow"></span>
         <button value="close">Cancel</button>
         <button type="button" data-action="do-import" class="primary">Import</button>
@@ -85,6 +89,7 @@
   <script src="js/model.js"></script>
   <script src="js/pyagrum.js"></script>
   <script src="js/inference.js"></script>
+  <script src="js/image.js"></script>
   <script src="js/demos.js"></script>
   <script src="js/cpt.js"></script>
   <script src="js/app.js"></script>
