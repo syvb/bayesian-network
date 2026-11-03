@@ -603,3 +603,6 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
   .toolbar .narrow-icon { display: inline; font-size: 15px; line-height: 1; }
   .toolbar .wide-label { display: none; }
 }
+
+#empty-hint { pointer-events: none; }
+#empty-hint[hidden] { display: none; }

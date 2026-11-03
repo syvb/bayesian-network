@@ -419,9 +419,7 @@
     viewport.innerHTML = parts.join("");
     renderEvidenceBar(inf);
     positionSoftEditor();
-    if (!net.nodes.length) {
-      viewport.innerHTML += `<text x="${(svg.clientWidth / 2 - view.x) / view.k}" y="${(svg.clientHeight / 2 - view.y) / view.k}" text-anchor="middle" fill="currentColor" opacity="0.45">Double-click anywhere to add a node, or load one from Demo</text>`;
-    }
+    $("#empty-hint").toggleAttribute("hidden", net.nodes.length > 0);
   }
 
   // ------------------------------------------------------------ inference & evidence
