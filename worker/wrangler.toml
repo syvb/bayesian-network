@@ -6,7 +6,7 @@ workers_dev = true
 
 [vars]
 # The GitHub App's client ID (public; starts with Iv). Also set it as clientId in js/gist.js.
-GITHUB_CLIENT_ID = ""
+GITHUB_CLIENT_ID = "Iv23liQaDiXqcirIGeD0"
 # The GitHub App's callback URL, exactly as registered: the editor page.
 REDIRECT_URI = "https://iter.ca/bn/"
 # The only origin allowed to call /token (no path, no trailing slash).

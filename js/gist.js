@@ -12,8 +12,8 @@
 const BNGist = (() => {
   // Leave clientId or tokenUrl empty to turn Gist sharing off. See worker/README.md for setup.
   const config = {
-    clientId: "", // the GitHub App's client ID (public; starts with Iv)
-    tokenUrl: "", // the Worker's token endpoint, e.g. https://bn-editor-oauth.<account>.workers.dev/token
+    clientId: "Iv23liQaDiXqcirIGeD0", // the GitHub App's client ID (public; starts with Iv)
+    tokenUrl: "https://bn-editor-oauth.smit.workers.dev/token", // the Worker's token endpoint
     redirectUri: "https://iter.ca/bn/", // the GitHub App's callback URL: this page
   };
 
