@@ -110,10 +110,9 @@
     return fs.reduce(multiply, makeFactor([], [], new Float64Array([1])));
   }
 
-  // evidence: Map(node id -> state index for hard evidence, or an array with one likelihood per
-  // state for soft evidence, as in pyAgrum's bn/ie.setEvidence({"x": [0.2, 0.8]})).
-  // Returns {marginals: Map(id -> number[]), pEvidence} or {error}.
-  function posteriors(net, evidence = new Map()) {
+  // Exact marginals given hard and likelihood evidence. With `only`, marginals are computed just for
+  // those node ids. Returns {marginals, pEvidence} or {error}.
+  function exact(net, evidence, only) {
     try {
       const hard = new Map(), soft = new Map();
       for (const [id, v] of evidence) (typeof v === "number" ? hard : soft).set(id, v);
@@ -135,6 +134,7 @@
       }
       const marginals = new Map();
       for (const n of net.nodes) {
+        if (only && !only.has(n.id)) continue;
         if (hard.has(n.id)) {
           marginals.set(n.id, n.labels.map((_, s) => (s === hard.get(n.id) ? 1 : 0)));
           continue;
@@ -148,6 +148,54 @@
       if (err instanceof InferenceError) return { error: err.message };
       throw err;
     }
+  }
+
+  // evidence: Map(node id -> one of
+  //   a state index: hard evidence;
+  //   an array with one likelihood per state: soft (likelihood) evidence, as in pyAgrum's
+  //     ie.setEvidence({"x": [0.2, 0.8]});
+  //   {target: [...]}: the node's probabilities after all the evidence should be exactly these
+  //     (Jeffrey's rule)).
+  // Target evidence is turned into the likelihoods that produce it, found by iterative
+  // proportional fitting; with one target node this takes a single step.
+  // Returns {marginals: Map(id -> number[]), pEvidence, likelihoods: Map(id -> number[])} or {error}.
+  // pEvidence covers only the hard and likelihood evidence.
+  function posteriors(net, evidence = new Map()) {
+    const targets = [...evidence].filter(([, v]) => v && v.target);
+    if (!targets.length) return exact(net, evidence);
+    const plain = new Map([...evidence].filter(([, v]) => !(v && v.target)));
+    const base = exact(net, plain, new Set());
+    if (base.error) return base;
+    const ev = new Map(plain);
+    for (const [id, { target }] of targets) ev.set(id, target.map((q) => (q > 0 ? 1 : 0)));
+    const targetIds = new Set(targets.map(([id]) => id));
+    let converged = false;
+    for (let it = 0; it < 500 && !converged; it++) {
+      const r = exact(net, ev, targetIds);
+      if (r.error) return impossibleTargets(net, targets, r.error);
+      converged = true;
+      for (const [id, { target }] of targets) {
+        const p = r.marginals.get(id), lik = ev.get(id).slice();
+        for (let s = 0; s < lik.length; s++) {
+          if (target[s] > 0 && !(p[s] > 0)) return impossibleTargets(net, [[id, { target }]]);
+          if (Math.abs(p[s] - target[s]) > 1e-9) converged = false;
+          lik[s] = target[s] > 0 ? lik[s] * (target[s] / p[s]) : 0;
+        }
+        const max = Math.max(...lik);
+        ev.set(id, lik.map((x) => x / max));
+      }
+    }
+    if (!converged) return { error: "These target probabilities can't all hold at once: they contradict each other or the other evidence." };
+    const r = exact(net, ev);
+    if (r.error) return r;
+    r.pEvidence = base.pEvidence;
+    r.likelihoods = new Map(targets.map(([id]) => [id, ev.get(id)]));
+    return r;
+  }
+
+  function impossibleTargets(net, targets) {
+    const names = targets.map(([id]) => M.getNode(net, id).name).join(", ");
+    return { error: `This evidence is impossible: the target probabilities for ${names} give probability to a state that the rest of the model rules out.` };
   }
 
   globalThis.BNInference = { posteriors };

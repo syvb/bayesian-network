@@ -442,10 +442,12 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 #soft-editor[hidden] { display: none; }
 #soft-editor p { margin: 4px 0 8px; font-size: 12px; }
 .soft-head { display: flex; align-items: center; gap: 6px; }
-.soft-row { display: grid; grid-template-columns: 70px 1fr 64px; align-items: center; gap: 8px; margin: 4px 0; }
+.soft-row { display: grid; grid-template-columns: 70px 1fr auto; align-items: center; gap: 8px; margin: 4px 0; }
 .soft-row .slabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .soft-row input[type=range] { width: 100%; accent-color: var(--observed); }
 .soft-row input[type=number] { width: 64px; text-align: right; }
+.soft-row .soft-num { display: inline-flex; align-items: center; gap: 2px; }
+.soft-kind { margin: 8px 0 2px; }
 .soft-actions { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
 
 /* ---------------------------------------------------------------- CPT row targeting */
