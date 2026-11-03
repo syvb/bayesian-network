@@ -2,8 +2,11 @@
   "use strict";
   const M = globalThis.BNModel, P = globalThis.BNPyAgrum;
   const STORAGE_KEY = "bn-editor-network";
+  const EVIDENCE_KEY = "bn-editor-evidence";
+  const PROBS_KEY = "bn-editor-show-probabilities";
   const NODE_H = 50;
-  const SVG_NS = "http://www.w3.org/2000/svg";
+  // probability view: header, then one row per state with a bar
+  const PROB_HEAD = 30, PROB_ROW = 18, PROB_BAR = 64, PROB_PCT = 44, PROB_LABEL_MAX = 110;
 
   const $ = (s) => document.querySelector(s);
   const svg = $("#canvas"), viewport = $("#viewport"), panel = $("#panel"), inline = $("#inline-edit");
@@ -16,6 +19,10 @@
   let undoStack = [], redoStack = [];
   let drag = null;
   let lastPointer = null; // world coordinates of the pointer, used by the N shortcut
+  let showProbs = localStorage.getItem(PROBS_KEY) !== "0";
+  let evidence = new Map(); // node id -> observed state label (editor state, not part of undo)
+  try { evidence = new Map(JSON.parse(localStorage.getItem(EVIDENCE_KEY)) || []); } catch {}
+  let inferenceCache = null;
 
   // ------------------------------------------------------------ state & history
 
@@ -48,6 +55,7 @@
 
   function refresh() {
     pruneSelection();
+    inferenceCache = null;
     save();
     render();
     cpt.render(cptNodeId());
@@ -119,6 +127,21 @@
   function nodeWidth(n) {
     return Math.max(84, Math.ceil(textWidth(n.name, "600 14px system-ui, sans-serif")) + 30);
   }
+  function labelWidth(n) {
+    return Math.min(PROB_LABEL_MAX, Math.max(...n.labels.map((l) => Math.ceil(textWidth(l, "12px system-ui, sans-serif")))));
+  }
+  function nodeSize(n) {
+    if (!showProbs) return { w: nodeWidth(n), h: NODE_H };
+    return {
+      w: Math.max(nodeWidth(n), 10 + labelWidth(n) + 8 + PROB_BAR + PROB_PCT + 6),
+      h: PROB_HEAD + n.labels.length * PROB_ROW + 8,
+    };
+  }
+  function truncate(text, font, maxW) {
+    if (textWidth(text, font) <= maxW) return text;
+    while (text.length > 1 && textWidth(text + "…", font) > maxW) text = text.slice(0, -1);
+    return text + "…";
+  }
 
   function toWorld(e) {
     const r = svg.getBoundingClientRect();
@@ -126,9 +149,9 @@
   }
 
   // Point where the segment from b's centre towards a leaves b's box (with margin).
-  function boxExit(b, w, ax, ay, margin) {
+  function boxExit(b, size, ax, ay, margin) {
     const dx = ax - b.x, dy = ay - b.y;
-    const hw = w / 2 + margin, hh = NODE_H / 2 + margin;
+    const hw = size.w / 2 + margin, hh = size.h / 2 + margin;
     const t = Math.min(dx ? hw / Math.abs(dx) : Infinity, dy ? hh / Math.abs(dy) : Infinity);
     return t >= 1 ? { x: b.x, y: b.y } : { x: b.x + dx * t, y: b.y + dy * t };
   }
@@ -138,13 +161,13 @@
     const r = svg.getBoundingClientRect();
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const n of net.nodes) {
-      const w = nodeWidth(n) / 2;
-      x0 = Math.min(x0, n.x - w); x1 = Math.max(x1, n.x + w);
-      y0 = Math.min(y0, n.y - NODE_H / 2); y1 = Math.max(y1, n.y + NODE_H / 2 + 10);
+      const { w, h } = nodeSize(n);
+      x0 = Math.min(x0, n.x - w / 2); x1 = Math.max(x1, n.x + w / 2);
+      y0 = Math.min(y0, n.y - h / 2); y1 = Math.max(y1, n.y + h / 2 + 10);
     }
-    const pad = 50;
-    const k = Math.min(1.4, (r.width - 2 * pad) / (x1 - x0), (r.height - 2 * pad) / (y1 - y0));
-    view = { k, x: r.width / 2 - ((x0 + x1) / 2) * k, y: r.height / 2 - ((y0 + y1) / 2) * k };
+    const pad = 50, top = showProbs ? 50 : 0; // room for the evidence bar
+    const k = Math.min(1.4, (r.width - 2 * pad) / (x1 - x0), (r.height - 2 * pad - top) / (y1 - y0));
+    view = { k, x: r.width / 2 - ((x0 + x1) / 2) * k, y: (r.height + top) / 2 - ((y0 + y1) / 2) * k };
     applyView();
   }
 
@@ -159,7 +182,8 @@
 
   function render() {
     const parts = [];
-    const widths = new Map(net.nodes.map((n) => [n.id, nodeWidth(n)]));
+    const widths = new Map(net.nodes.map((n) => [n.id, nodeSize(n)]));
+    const inf = showProbs ? inference() : null;
     for (const a of net.arcs) {
       const f = M.getNode(net, a.from), t = M.getNode(net, a.to);
       const p1 = boxExit(f, widths.get(f.id), t.x, t.y, 0);
@@ -169,23 +193,39 @@
       parts.push(`<g class="arc${sel ? " selected" : ""}" data-from="${a.from}" data-to="${a.to}"><path class="hit" d="${d}"/><path class="line" d="${d}" marker-end="url(#${sel ? "arrow-sel" : "arrow"})"/></g>`);
     }
     for (const n of net.nodes) {
-      const w = widths.get(n.id), h = NODE_H;
+      const { w, h } = widths.get(n.id);
       const classes = ["node"];
       if (selNodes.has(n.id)) classes.push("selected");
       if (drag && drag.mode === "arc" && drag.target === n.id) classes.push("target");
-      let states = n.labels.join(" · ");
-      const maxW = w - 16;
-      if (textWidth(states, "11px system-ui, sans-serif") > maxW) {
-        while (states.length > 1 && textWidth(states + "…", "11px system-ui, sans-serif") > maxW) states = states.slice(0, -1);
-        states += "…";
-      }
+      const observed = inf && evidenceIndices().get(n.id);
+      if (observed !== undefined && observed !== null) classes.push("observed");
       const bad = M.badRows(n).length > 0;
+      let content;
+      if (inf) {
+        const probs = inf.marginals && inf.marginals.get(n.id);
+        const lw = labelWidth(n), barX = -w / 2 + 10 + lw + 8;
+        content = `<text class="name" text-anchor="middle" y="${-h / 2 + 20}">${esc(n.name)}</text>` +
+          n.labels.map((l, s) => {
+            const y = -h / 2 + PROB_HEAD + s * PROB_ROW;
+            const p = probs ? probs[s] : null;
+            const pct = p === null ? "–" : p >= 0.9995 ? "100%" : (p * 100).toFixed(1) + "%";
+            return `<g class="state-row${observed === s ? " observed" : ""}" data-state="${s}">` +
+              `<rect class="row-hit" x="${-w / 2 + 4}" y="${y}" width="${w - 8}" height="${PROB_ROW}" rx="3"/>` +
+              `<text class="slabel" x="${-w / 2 + 10}" y="${y + 13}">${esc(truncate(l, "12px system-ui, sans-serif", lw))}</text>` +
+              `<rect class="pbar-bg" x="${barX}" y="${y + 4}" width="${PROB_BAR}" height="10" rx="2"/>` +
+              (p ? `<rect class="pbar" x="${barX}" y="${y + 4}" width="${PROB_BAR * p}" height="10" rx="2"/>` : "") +
+              `<text class="pct" x="${w / 2 - 8}" y="${y + 13}" text-anchor="end">${pct}</text></g>`;
+          }).join("");
+      } else {
+        content = `<text class="name" text-anchor="middle" y="-3">${esc(n.name)}</text>` +
+          `<text class="states" text-anchor="middle" y="14">${esc(truncate(n.labels.join(" · "), "11px system-ui, sans-serif", w - 16))}</text>`;
+      }
+      const tip = showProbs ? "\nClick a state to set or clear it as evidence" : "";
       parts.push(
         `<g class="${classes.join(" ")}" data-node="${n.id}" transform="translate(${n.x},${n.y})">` +
-          `<title>${esc(n.name)}${n.description ? " — " + esc(n.description) : ""}\n${esc(n.labels.join(", "))}${bad ? "\nCPT rows do not sum to 1" : ""}</title>` +
+          `<title>${esc(n.name)}${n.description ? " — " + esc(n.description) : ""}\n${esc(n.labels.join(", "))}${bad ? "\nCPT rows do not sum to 1" : ""}${tip}</title>` +
           `<rect class="body" x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}" rx="9"/>` +
-          `<text class="name" text-anchor="middle" y="-3">${esc(n.name)}</text>` +
-          `<text class="states" text-anchor="middle" y="14">${esc(states)}</text>` +
+          content +
           (bad ? `<circle class="bad" cx="${w / 2 - 8}" cy="${-h / 2 + 8}" r="4"/>` : "") +
           `<circle class="port" data-port="${n.id}" cx="0" cy="${h / 2}" r="6"/>` +
         `</g>`
@@ -203,10 +243,91 @@
       parts.push(`<rect class="rubber" x="${r.x0}" y="${r.y0}" width="${r.x1 - r.x0}" height="${r.y1 - r.y0}"/>`);
     }
     viewport.innerHTML = parts.join("");
+    renderEvidenceBar(inf);
     if (!net.nodes.length) {
       viewport.innerHTML += `<text x="${(svg.clientWidth / 2 - view.x) / view.k}" y="${(svg.clientHeight / 2 - view.y) / view.k}" text-anchor="middle" fill="currentColor" opacity="0.45">Double-click anywhere to add a node, or load one from Demo</text>`;
     }
   }
+
+  // ------------------------------------------------------------ inference & evidence
+
+  // Evidence as node id -> state index, skipping entries whose node or state no longer exists.
+  function evidenceIndices(labels = evidence) {
+    const out = new Map();
+    for (const [id, label] of labels) {
+      const n = M.getNode(net, id);
+      const s = n ? n.labels.indexOf(label) : -1;
+      if (s >= 0) out.set(id, s);
+    }
+    return out;
+  }
+
+  function inference() {
+    if (!inferenceCache) inferenceCache = BNInference.posteriors(net, evidenceIndices());
+    return inferenceCache;
+  }
+
+  function saveEvidence() {
+    localStorage.setItem(EVIDENCE_KEY, JSON.stringify([...evidenceIndices()].map(([id, s]) => [id, M.getNode(net, id).labels[s]])));
+  }
+
+  function setEvidence(next) {
+    const result = BNInference.posteriors(net, evidenceIndices(next));
+    if (result.error && /impossible/.test(result.error)) { toast(result.error); return false; }
+    evidence = next;
+    inferenceCache = result;
+    saveEvidence();
+    render();
+    return true;
+  }
+
+  function toggleEvidence(id, s) {
+    const n = M.getNode(net, id);
+    const next = new Map(evidence);
+    if (next.get(id) === n.labels[s]) next.delete(id);
+    else next.set(id, n.labels[s]);
+    setEvidence(next);
+  }
+
+  function clearEvidence() {
+    evidence = new Map();
+    inferenceCache = null;
+    saveEvidence();
+  }
+
+  function toggleProbs() {
+    showProbs = !showProbs;
+    localStorage.setItem(PROBS_KEY, showProbs ? "1" : "0");
+    document.querySelector('[data-action="probs"]').setAttribute("aria-pressed", showProbs);
+    render();
+    if (!inline.hidden) positionInline();
+  }
+
+  const evidenceBar = $("#evidence-bar");
+  function renderEvidenceBar(inf) {
+    evidenceBar.hidden = !inf || !net.nodes.length;
+    if (evidenceBar.hidden) return;
+    const ev = evidenceIndices();
+    const fmtP = (p) => (p >= 0.001 ? +p.toPrecision(3) : p.toExponential(2));
+    if (inf.error) {
+      evidenceBar.innerHTML = `<span class="warn">${esc(inf.error)}</span>`;
+    } else if (!ev.size) {
+      evidenceBar.innerHTML = `<span class="muted">Click a state in any node to observe it; every other node then shows its updated probabilities.</span>`;
+    } else {
+      evidenceBar.innerHTML = `<span class="ev-label">Evidence</span>` +
+        [...ev].map(([id, s]) => { const n = M.getNode(net, id); return `<span class="ev-chip">${esc(n.name)} = ${esc(n.labels[s])}<button class="icon" data-clear-ev="${id}" title="Remove this evidence">✕</button></span>`; }).join("") +
+        `<span class="muted" title="Probability of all the evidence together, before observing it">P(evidence) = ${fmtP(inf.pEvidence)}</span>` +
+        `<button class="small" data-clear-ev="all">Clear all</button>`;
+    }
+  }
+  evidenceBar.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-clear-ev]");
+    if (!b) return;
+    const next = new Map(evidence);
+    if (b.dataset.clearEv === "all") next.clear();
+    else next.delete(+b.dataset.clearEv);
+    setEvidence(next);
+  });
 
   function rubberRect() {
     const a = drag.start, b = drag.pos;
@@ -249,8 +370,10 @@
         return;
       }
       if (!selNodes.has(id)) select([id]);
+      const stateEl = showProbs && e.target.closest("[data-state]");
       drag = {
         mode: "move", start: p, moved: false,
+        state: stateEl ? { id, s: +stateEl.dataset.state } : null,
         origin: [...selNodes].map((sid) => { const n = M.getNode(net, sid); return { n, x: n.x, y: n.y }; }),
       };
     } else if (arcEl) {
@@ -307,6 +430,7 @@
     svg.classList.remove("panning");
     if (d.mode === "pan" && !d.moved) select([]);
     else if (d.mode === "move" && d.moved) { save(); render(); }
+    else if (d.mode === "move" && d.state) toggleEvidence(d.state.id, d.state.s);
     else if (d.mode === "arc") {
       if (d.target) {
         if (M.hasArc(net, d.from, d.target)) { toast("That arc already exists"); render(); return; }
@@ -325,6 +449,7 @@
     // The canvas is re-rendered on every click, so look up what is under the pointer now.
     const el = document.elementFromPoint(e.clientX, e.clientY);
     const nodeEl = el && el.closest("[data-node]");
+    if (nodeEl && el.closest("[data-state]")) return; // its two clicks already toggled evidence on and off
     if (nodeEl) startInlineEdit(+nodeEl.dataset.node);
     else if (!(el && el.closest(".arc"))) newNodeAt(toWorld(e));
   });
@@ -359,10 +484,10 @@
   function positionInline() {
     const n = M.getNode(net, inlineId);
     if (!n) { inline.hidden = true; return; }
-    const w = Math.max(nodeWidth(n), 120) * view.k;
+    const w = Math.max(nodeSize(n).w, 120) * view.k;
     inline.style.width = w + "px";
     inline.style.left = view.x + n.x * view.k - w / 2 + "px";
-    inline.style.top = view.y + (n.y - 14) * view.k + "px";
+    inline.style.top = view.y + (n.y - nodeSize(n).h / 2 + (showProbs ? 4 : 11)) * view.k + "px";
     inline.style.fontSize = 14 * view.k + "px";
   }
   function commitInline() {
@@ -412,6 +537,7 @@
     else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelection(); }
     else if (e.key === "Escape") select([]);
     else if (e.key === "f" || e.key === "F") fit();
+    else if (e.key === "p" || e.key === "P") toggleProbs();
     else if ((e.key === "c" || e.key === "C") && cptNodeId() != null) { e.preventDefault(); cpt.focus(); }
     else if (e.key === "n" || e.key === "N") { e.preventDefault(); addNodeShortcut(); }
     else if (e.key === "Enter" && selNodes.size === 1) { e.preventDefault(); startInlineEdit([...selNodes][0]); }
@@ -503,7 +629,8 @@
         <dt>Rename</dt><dd>Double-click a node, or select it and press <kbd>Enter</kbd>.</dd>
         <dt>Select</dt><dd>Click; <kbd>Ctrl</kbd>-click to add; <kbd>Shift</kbd>-drag on empty space for a box; <kbd>Ctrl</kbd>+<kbd>A</kbd> for all.</dd>
         <dt>Move</dt><dd>Drag nodes, or nudge with arrow keys. Drag empty space to pan, scroll to zoom, <kbd>F</kbd> to fit.</dd>
-        <dt>Probabilities</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (with “Keep rows summing to 1” on, the rest of the row is adjusted for you), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
+        <dt>CPTs</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (with “Keep rows summing to 1” on, the rest of the row is adjusted for you), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
+        <dt>Probabilities &amp; evidence</dt><dd>With <b>Probabilities</b> on (<kbd>P</kbd>), every node shows the probability of each of its states, computed exactly from the CPTs. Click a state to observe it (for example “the grass is wet”); all other nodes update to the probabilities given that evidence. Click it again, or use the evidence bar, to clear it.</dd>
         <dt>Delete / duplicate</dt><dd><kbd>Del</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd>. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</dd>
         <dt>pyAgrum</dt><dd>Export writes <code>import pyagrum as gum</code> code; <kbd>Ctrl</kbd>+<kbd>S</kbd> downloads it. Import accepts that code, hand-written <code>gum.BayesNet</code> code, and <code>gum.fastBN</code>. You can also drop a .py file on the canvas.</dd>
       </dl>`;
@@ -579,7 +706,7 @@
       <div class="chips">${parents.map((p) => chip(p, "parent")).join("") || '<span class="muted">None</span>'}</div>
       <h3>Children</h3>
       <div class="chips">${children.map((c) => chip(c, "child")).join("") || '<span class="muted">None</span>'}</div>
-      <h3>Probabilities</h3>
+      <h3>CPT</h3>
       <p class="muted">Edit this variable's CPT in the table below the canvas (press <kbd>C</kbd> to jump there).</p>
       <p style="margin-top:16px"><button class="danger" data-act="delete">Delete variable</button></p>`;
 
@@ -690,6 +817,7 @@
     const { net: imported, warnings } = P.importPython(src);
     $("#import-warnings").innerHTML = warnings.map((w) => `<li>${esc(w)}</li>`).join("");
     if (!imported) return false;
+    clearEvidence();
     change(() => { net = imported; });
     select([]);
     fit();
@@ -733,11 +861,13 @@
   const actions = {
     new: () => {
       if (net.nodes.length && !confirm("Start a new empty network? (You can undo this.)")) return;
+      clearEvidence();
       change(() => { net = M.createNetwork("BN"); });
       select([]);
     },
     import: openImport,
     demo: () => toggleDemoMenu(),
+    probs: toggleProbs,
     export: openExport,
     undo, redo,
     add: () => addNodeShortcut(true),
@@ -759,6 +889,7 @@
     if (!b) return;
     const demo = BNDemos.find((d) => d.id === b.dataset.demo);
     toggleDemoMenu(false);
+    clearEvidence();
     change(() => { net = demo.build(); });
     select([]);
     fit();
@@ -795,9 +926,11 @@
     toast,
     onEscape: () => svg.focus(),
     onResize: () => render(),
+    onLiveEdit: () => { inferenceCache = null; render(); },
   });
 
   net = load();
+  document.querySelector('[data-action="probs"]').setAttribute("aria-pressed", showProbs);
   render();
   renderPanel();
   cpt.render(cptNodeId());

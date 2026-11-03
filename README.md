@@ -12,7 +12,7 @@ It is a static site with no build step: serve the directory with any static file
 - **Add an arc:** drag from the dot under a node onto another node, or `Shift`-drag a node. Dropping on empty space creates a new child node.
 - **Rename:** double-click a node, or select it and press `Enter`.
 - **States:** edit them in the side panel. `Enter` adds a state and `Backspace` on an empty state removes it.
-- **Probabilities:** the selected variable's CPT appears in a resizable table under the canvas (press `C` to jump to it). It works like a spreadsheet:
+- **CPTs:** the selected variable's CPT appears in a resizable table under the canvas (press `C` to jump to it). It works like a spreadsheet:
   - Type in a cell to replace its value; `0.3`, `30%` and `1/3` are all accepted. `Enter`, `Tab` and the arrow keys move between cells, and `Shift`+arrows extend the selection.
   - With **Keep rows summing to 1** on (the default), typing a value rescales the row's other states so the row still sums to 1. For example, typing `0.8` into `0.5 · 0.3 · 0.2` gives `0.8 · 0.12 · 0.08`. Values you have typed in a row are kept while you stay in it, so typing all but one state fills in the last. The adjusted cells flash, and the `?` button next to the option explains it.
   - Drag the dividers in a row's bar to move probability between neighbouring states (hold `Shift` for finer steps). Double-click a bar segment to give that state 100%.
@@ -26,6 +26,14 @@ It is a static site with no build step: serve the directory with any static file
 Changing states or arcs keeps the existing CPT values wherever the states still exist.
 
 The network is saved automatically in the browser's local storage.
+
+## Probabilities and evidence
+
+With **Probabilities** on (toolbar button or `P`), every node shows the probability of each of its states, computed exactly in the browser by variable elimination. The results match pyAgrum's `LazyPropagation`.
+
+Click a state in a node to observe it, e.g. "the grass is wet". Every other node then shows its probabilities given the evidence. Click the state again to clear it. The evidence bar at the top of the canvas lists what you've observed, shows P(evidence), and has **Clear all**. Impossible evidence (probability 0) is refused. Probabilities also update live while you edit CPTs.
+
+Evidence belongs to the editor session, not the network: it isn't undone with `Ctrl+Z` and isn't exported.
 
 ## pyAgrum
 

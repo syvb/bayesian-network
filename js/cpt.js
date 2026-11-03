@@ -527,6 +527,7 @@
       cpt[o + i] = round(b - start);
       cpt[o + i + 1] = round(end - b);
       updateRow(d.r);
+      opts.onLiveEdit();
       sel = { ar: d.r, ac: i, fr: d.r, fc: i };
       paintSelection();
     });

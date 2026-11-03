@@ -11,6 +11,7 @@
   --node-border: #8b93a3;
   --arc: #6e7685;
   --grid: #e7e9ee;
+  --observed: #d9480f;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -27,6 +28,7 @@
     --node-border: #6c7484;
     --arc: #9aa2b1;
     --grid: #20242c;
+    --observed: #ff8a4c;
   }
 }
 
@@ -372,3 +374,48 @@ input.cell-edit {
 .cpt-grid td.cell.adjusted { animation: cell-adjusted 1.6s ease-out; }
 .dock-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
 .nowrap { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- probabilities & evidence */
+button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.node .state-row { cursor: pointer; }
+.node .row-hit { fill: transparent; }
+.node .state-row:hover .row-hit { fill: var(--accent-soft); }
+.node .slabel { font-size: 12px; }
+.node .pct { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.node .pbar-bg { fill: var(--bg); stroke: var(--border); stroke-width: 0.5; }
+.node .pbar { fill: var(--accent); opacity: 0.85; }
+.node.observed rect.body { stroke: var(--observed); stroke-width: 2.5; }
+.node.observed.selected rect.body { stroke: var(--accent); }
+.node .state-row.observed .row-hit { fill: color-mix(in srgb, var(--observed) 15%, transparent); }
+.node .state-row.observed .slabel, .node .state-row.observed .pct { font-weight: 700; fill: var(--observed); }
+.node .state-row.observed .pbar { fill: var(--observed); }
+
+#evidence-bar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: calc(100% - 20px);
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  font-size: 13px;
+  z-index: 4;
+}
+#evidence-bar[hidden] { display: none; }
+.ev-label { font-weight: 600; color: var(--observed); }
+.ev-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 3px 1px 9px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--observed) 15%, transparent);
+}
+.ev-chip button.icon { font-size: 12px; }

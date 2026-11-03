@@ -20,6 +20,8 @@
     <button data-action="undo" title="Undo (Ctrl+Z)">Undo</button>
     <button data-action="redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
     <span class="sep"></span>
+    <button data-action="probs" class="toggle" aria-pressed="true" title="Show each node's probabilities and set evidence by clicking states (P)">Probabilities</button>
+    <span class="sep"></span>
     <button data-action="add" title="Add a node (N)">Add node</button>
     <button data-action="layout" title="Arrange nodes in layers">Auto layout</button>
     <button data-action="fit" title="Fit the network in view (F)">Fit</button>
@@ -41,6 +43,7 @@
         <g id="viewport"></g>
       </svg>
       <input id="inline-edit" type="text" spellcheck="false" hidden>
+      <div id="evidence-bar" hidden></div>
     </div>
     <section id="cpt-dock" aria-label="Conditional probability table"></section>
     </div>
@@ -80,6 +83,7 @@
 
   <script src="js/model.js"></script>
   <script src="js/pyagrum.js"></script>
+  <script src="js/inference.js"></script>
   <script src="js/demos.js"></script>
   <script src="js/cpt.js"></script>
   <script src="js/app.js"></script>
