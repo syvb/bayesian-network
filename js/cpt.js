@@ -361,8 +361,10 @@
         if (!prefs.balance || k < 2) return;
         const others = [...Array(k).keys()].filter((s) => s !== c);
         let free = others.filter((s) => !pins.set.has(s));
-        if (!free.length) free = others;
-        const kept = v + sum(others.filter((s) => !free.includes(s)).map((s) => cpt[o + s]));
+        let kept = v + sum(others.filter((s) => !free.includes(s)).map((s) => cpt[o + s]));
+        // When the typed values no longer fit under 1 (or nothing is left to adjust), the new value
+        // wins and every other state in the row is rescaled.
+        if (!free.length || kept > 1 + 1e-9) { free = others; kept = v; pins.set = new Set(); }
         const rem = 1 - kept, cur = sum(free.map((s) => cpt[o + s]));
         const before = free.map((s) => cpt[o + s]);
         for (const s of free) cpt[o + s] = round(rem <= 0 ? 0 : cur > 0 ? (cpt[o + s] * rem) / cur : rem / free.length);
@@ -498,7 +500,8 @@
       const lines = [];
       for (let r = r0; r <= r1; r++) {
         const line = [];
-        for (let c = c0; c <= c1; c++) line.push(M.fmtNum(cpt[rows[r].offset + c]));
+        // percentages carry their % sign, so pasting reads them back the same in either format
+        for (let c = c0; c <= c1; c++) line.push(prefs.percent ? M.fmtNum(cpt[rows[r].offset + c] * 100) + "%" : M.fmtNum(cpt[rows[r].offset + c]));
         lines.push(line.join("\t"));
       }
       e.clipboardData.setData("text/plain", lines.join("\n"));

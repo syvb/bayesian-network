@@ -221,10 +221,56 @@
     restructure(net, () => { net.arcs = net.arcs.filter((a) => !(a.from === from && a.to === to)); });
   }
 
+  // Checked before anything changes: removing the arc first would remap the child's CPT, and
+  // putting the arc back can't restore the rows that remapping dropped.
+  function reversalError(net, from, to) {
+    if (!hasArc(net, from, to)) return "There is no such arc";
+    const without = { ...net, arcs: net.arcs.filter((a) => !(a.from === from && a.to === to)) };
+    return wouldCycle(without, to, from) ? "That arc would create a cycle" : null;
+  }
+
+  // Flips the arc; the child keeps its CPT for its remaining parents.
   function reverseArc(net, from, to) {
+    const err = reversalError(net, from, to);
+    if (err) return err;
     removeArc(net, from, to);
-    const err = addArc(net, to, from);
-    if (err) { addArc(net, from, to); return err; }
+    return addArc(net, to, from);
+  }
+
+  // pyAgrum's bn.reverseArc: flips the arc and keeps the joint distribution, by giving each of the
+  // two nodes the other's parents and recomputing both CPTs with Bayes' rule (Shachter 1986).
+  // Parent order: existing parents first, new ones after (pyAgrum's order depends on its internals).
+  function reverseArcBayes(net, from, to) {
+    const err = reversalError(net, from, to);
+    if (err) return err;
+    const nf = getNode(net, from), nt = getNode(net, to);
+    const cardOf = (id) => getNode(net, id).labels.length;
+    const old = { [from]: { pa: parentsOf(net, from), cpt: nf.cpt }, [to]: { pa: parentsOf(net, to), cpt: nt.cpt } };
+    const val = (id, a) => {
+      const { pa, cpt } = old[id];
+      let off = 0, s = 1;
+      for (const p of pa) { off += a.get(p) * s; s *= cardOf(p); }
+      return cpt[off * cardOf(id) + a.get(id)];
+    };
+    net.arcs = net.arcs.filter((a) => !(a.from === from && a.to === to));
+    for (const p of old[to].pa) if (p !== from && !hasArc(net, p, from)) net.arcs.push({ from: p, to: from });
+    net.arcs.push({ from: to, to: from });
+    for (const p of old[from].pa) if (!hasArc(net, p, to)) net.arcs.push({ from: p, to });
+    // Calls f(assignment) for every cell of id's CPT, in CPT order (state fastest, then parents).
+    const cells = (id, f) => {
+      const vars = [id].concat(parentsOf(net, id)), cards = vars.map(cardOf), a = new Map();
+      const total = cards.reduce((x, y) => x * y, 1), out = new Array(total);
+      for (let i = 0; i < total; i++) {
+        let rem = i;
+        vars.forEach((v, k) => { a.set(v, rem % cards[k]); rem = Math.floor(rem / cards[k]); });
+        out[i] = f(a);
+      }
+      return out;
+    };
+    const joint = (a) => val(from, a) * val(to, a);
+    const marginal = (a) => { const keep = a.get(from); let t = 0; for (let f = 0; f < nf.labels.length; f++) { a.set(from, f); t += joint(a); } a.set(from, keep); return t; };
+    nt.cpt = cells(to, (a) => { a.set(from, 0); return marginal(a); });
+    nf.cpt = cells(from, (a) => { const m = marginal(a); return m > 0 ? joint(a) / m : 1 / nf.labels.length; });
     return null;
   }
 
@@ -322,7 +368,7 @@
 
   const api = {
     TYPES, fmtNum, labelsFor, createNetwork, getNode, nodeByName, parentsOf, childrenOf, card, uniqueName,
-    addNode, setDomain, uniformCpt, wouldCycle, hasArc, stateMap, restructure, addArc, removeArc, reverseArc,
+    addNode, setDomain, uniformCpt, wouldCycle, hasArc, stateMap, restructure, addArc, removeArc, reverseArc, reverseArcBayes,
     removeNode, updateDomain, cptRows, normalizeRow, normalizeCpt, randomizeCpt, uniformizeCpt, badRows,
     autoLayout, strides,
   };

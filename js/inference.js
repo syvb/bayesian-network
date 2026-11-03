@@ -157,7 +157,7 @@
   //   {target: [...]}: the node's probabilities after all the evidence should be exactly these
   //     (Jeffrey's rule)).
   // Target evidence is turned into the likelihoods that produce it, found by iterative
-  // proportional fitting; with one target node this takes a single step.
+  // proportional fitting, one target at a time; with one target node this takes a single step.
   // Returns {marginals: Map(id -> number[]), pEvidence, likelihoods: Map(id -> number[])} or {error}.
   // pEvidence covers only the hard and likelihood evidence.
   function posteriors(net, evidence = new Map()) {
@@ -169,21 +169,25 @@
     const ev = new Map(plain);
     for (const [id, { target }] of targets) ev.set(id, target.map((q) => (q > 0 ? 1 : 0)));
     const targetIds = new Set(targets.map(([id]) => id));
+    // Fit one target at a time against fresh marginals: adjusting all of them from the same
+    // marginals overshoots when targets depend on each other (e.g. a node that copies another).
+    const fitted = (r) => targets.every(([id, { target }]) => r.marginals.get(id).every((p, s) => Math.abs(p - target[s]) <= 1e-9));
     let converged = false;
     for (let it = 0; it < 500 && !converged; it++) {
-      const r = exact(net, ev, targetIds);
-      if (r.error) return impossibleTargets(net, targets, r.error);
-      converged = true;
       for (const [id, { target }] of targets) {
+        const r = exact(net, ev, targetIds);
+        if (r.error) return impossibleTargets(net, targets, r.error);
         const p = r.marginals.get(id), lik = ev.get(id).slice();
         for (let s = 0; s < lik.length; s++) {
           if (target[s] > 0 && !(p[s] > 0)) return impossibleTargets(net, [[id, { target }]]);
-          if (Math.abs(p[s] - target[s]) > 1e-9) converged = false;
           lik[s] = target[s] > 0 ? lik[s] * (target[s] / p[s]) : 0;
         }
         const max = Math.max(...lik);
         ev.set(id, lik.map((x) => x / max));
       }
+      const r = exact(net, ev, targetIds);
+      if (r.error) return impossibleTargets(net, targets, r.error);
+      converged = fitted(r);
     }
     if (!converged) return { error: "These target probabilities can't all hold at once: they contradict each other or the other evidence." };
     const r = exact(net, ev);

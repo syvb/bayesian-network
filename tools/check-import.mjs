@@ -26,9 +26,18 @@ function compare(net, truthNodes, skip) {
     const parents = M.parentsOf(net, n.id).map((id) => M.getNode(net, id).name);
     const short = (x) => { const s = JSON.stringify(x); return s.length > 80 ? s.slice(0, 77) + "..." : s; };
     if (JSON.stringify(n.labels) !== JSON.stringify(tn.labels)) diffs.push(`${tn.name}: labels ${short(n.labels)} vs ${short(tn.labels)}`);
-    else if (JSON.stringify(parents) !== JSON.stringify(tn.parents)) diffs.push(`${tn.name}: parents ${parents} vs ${tn.parents}`);
+    else if (JSON.stringify([...parents].sort()) !== JSON.stringify([...tn.parents].sort())) diffs.push(`${tn.name}: parents ${parents} vs ${tn.parents}`);
     else if (!skip(tn.name)) {
-      const d = tn.cpt.reduce((m, v, i) => Math.max(m, Math.abs(v - n.cpt[i])), 0);
+      // The parent order may differ (pyAgrum's after reverseArc depends on its internals), so
+      // read pyAgrum's value for each of the editor's cells.
+      const cards = [n.labels.length, ...parents.map((p) => M.nodeByName(net, p).labels.length)];
+      const truthOrder = [tn.name, ...tn.parents];
+      const truthStrides = M.strides(truthOrder.map((name) => cards[[n.name, ...parents].indexOf(name)]));
+      const d = n.cpt.reduce((m, v, i) => {
+        let rem = i, j = 0;
+        [n.name, ...parents].forEach((name, k) => { j += (rem % cards[k]) * truthStrides[truthOrder.indexOf(name)]; rem = Math.floor(rem / cards[k]); });
+        return Math.max(m, Math.abs(v - tn.cpt[j]));
+      }, 0);
       if (!(d < 1e-9)) diffs.push(`${tn.name}: CPT differs by up to ${d.toPrecision(3)}`);
     }
   }
