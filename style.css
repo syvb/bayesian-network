@@ -315,3 +315,60 @@ input.cell-edit {
   opacity: 0.85;
 }
 .bar .handle:hover::after { background: var(--accent); opacity: 1; }
+
+.menu-anchor { position: relative; }
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 260px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.15);
+}
+.menu button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 10px;
+  text-align: left;
+}
+.menu button span { color: var(--muted); font-size: 12px; }
+.menu button:hover, .menu button:focus { background: var(--accent-soft); outline: none; }
+
+.help-button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  line-height: 1;
+}
+.help-popover {
+  width: min(440px, 90vw);
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 10px 40px rgb(0 0 0 / 0.25);
+  font-size: 13px;
+}
+.help-popover::backdrop { background: rgb(0 0 0 / 0.15); }
+.help-popover h3 { margin: 0 0 6px; font-size: 14px; }
+.help-popover ul { padding-left: 18px; margin: 6px 0; }
+.help-popover li { margin-bottom: 6px; }
+.help-popover p { margin: 6px 0; }
+.help-popover code { font-size: 12px; background: var(--bg); padding: 0 3px; border-radius: 3px; }
+@keyframes cell-adjusted { from { background-color: color-mix(in srgb, var(--accent) 35%, transparent); } }
+.cpt-grid td.cell.adjusted { animation: cell-adjusted 1.6s ease-out; }
+.dock-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.nowrap { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }

@@ -34,11 +34,21 @@
     let rows = []; // visible rows: {idx, offset}
     let sel = null; // {ar, ac, fr, fc}: anchor and focus cell, in visible-row / state indices
     let edit = null; // {r, c, input, overwrite}
-    let pins = { offset: -1, set: new Set() }; // states typed in the current row (kept by auto-balance)
+    let pins = { offset: -1, set: new Set() }; // states typed in the current row (kept when balancing)
+    let lastAdjust = null; // {offset, states}: cells changed by the last balancing, highlighted once
     let mouseSelecting = false;
     let barDrag = null;
 
-    dock.innerHTML = `<div class="dock-resize" title="Drag to resize"></div><header class="dock-head"></header><div class="cpt-scroll" tabindex="0"></div>`;
+    dock.innerHTML = `<div class="dock-resize" title="Drag to resize"></div><header class="dock-head"></header><div class="cpt-scroll" tabindex="0"></div>
+      <div id="balance-help" class="help-popover" popover>
+        <h3>Keep rows summing to 1</h3>
+        <p>Each CPT row is a probability distribution, so it has to add up to 1. With this option on, when you type a value the <b>other states in that row are adjusted for you</b>:</p>
+        <ul>
+          <li>Start with the row <code>0.5 · 0.3 · 0.2</code> and type <code>0.8</code> in the first cell. The other two shrink to <code>0.12 · 0.08</code>, keeping their 3 : 2 ratio.</li>
+          <li>Then type <code>0.15</code> in the second cell. Your <code>0.8</code> is kept and the last cell becomes <code>0.05</code>. Values you typed in a row stay put while you're still in that row, so typing all but one state fills in the last.</li>
+        </ul>
+        <p>Cells changed for you flash briefly. Turn the option off to edit cells independently, for example to enter raw weights and then press Normalize. Dragging a bar's dividers always keeps the row at 1.</p>
+      </div>`;
     const head = dock.querySelector(".dock-head");
     const grid = dock.querySelector(".cpt-scroll");
 
@@ -90,6 +100,7 @@
       }
       head.innerHTML = headerHTML(n, parents, all.length);
       grid.innerHTML = tableHTML(n, parents);
+      showAdjustment();
       paintSelection();
     }
 
@@ -105,19 +116,21 @@
         <span class="dock-status${bad ? " bad" : ""}">${bad
           ? `${bad} of ${total} row${total > 1 ? "s" : ""} ${bad > 1 ? "don't" : "doesn't"} sum to 1 · <button class="linkish" data-cpt="fix-all">Normalize ${bad > 1 ? "them" : "it"}</button>`
           : `✓ ${total > 1 ? `All ${total} rows sum` : "Sums"} to 1`}</span>
-        <span class="grow"></span>
-        <span class="scope muted"></span>
+        <span class="dock-tools">
+        <span class="nowrap"><span class="scope muted"></span>
         <button class="small" data-cpt="normalize" title="Scale each row so it sums to 1">Normalize</button>
         <button class="small" data-cpt="uniform">Uniform</button>
-        <button class="small" data-cpt="random">Random</button>
+        <button class="small" data-cpt="random">Random</button></span>
         <span class="sep"></span>
         <span class="seg-toggle" role="group" aria-label="Number format">
           <button class="small${prefs.percent ? "" : " on"}" data-cpt="mode-prob" title="Show probabilities">0.25</button><button class="small${prefs.percent ? " on" : ""}" data-cpt="mode-pct" title="Show percentages">25%</button>
         </span>
-        <label class="check" title="When you type a value, the row's other states are scaled so the row still sums to 1. States you already typed in that row are kept.">
-          <input type="checkbox" data-cpt="balance"${prefs.balance ? " checked" : ""}> Auto-balance
+        <span class="nowrap"><label class="check" title="When you type a value, the other states in that row are adjusted so the row still sums to ${prefs.percent ? "100%" : "1"}">
+          <input type="checkbox" data-cpt="balance"${prefs.balance ? " checked" : ""}> Keep rows summing to ${prefs.percent ? "100%" : "1"}
         </label>
-        ${collapseButton()}`;
+        <button class="help-button" popovertarget="balance-help" title="How does this work?" aria-label="How keeping rows summing to 1 works">?</button></span>
+        ${collapseButton()}
+        </span>`;
     }
 
     function barHTML(vals) {
@@ -169,6 +182,16 @@
       const more = rows.length > MAX_ROWS ? `<p class="dock-empty">Showing ${MAX_ROWS} of ${rows.length} rows. Use the filters in the parent columns to see the rest.</p>` : "";
       const none = !rows.length ? `<p class="dock-empty">No rows match the filters.</p>` : "";
       return `<table class="cpt-grid"><thead><tr>${headCells}</tr></thead><tbody>${body}</tbody></table>${more}${none}`;
+    }
+
+    // Briefly highlights the cells the last typed value rescaled.
+    function showAdjustment() {
+      const adj = lastAdjust;
+      lastAdjust = null;
+      const r = adj ? rows.findIndex((row) => row.offset === adj.offset) : -1;
+      const tr = r >= 0 && grid.querySelector(`tr[data-r="${r}"]`);
+      if (!tr) return;
+      for (const s of adj.states) tr.querySelector(`td.cell[data-c="${s}"]`).classList.add("adjusted");
     }
 
     // Refreshes one row in place (used while dragging, where a full re-render would lose the pointer).
@@ -251,7 +274,10 @@
         if (!free.length) free = others;
         const kept = v + sum(others.filter((s) => !free.includes(s)).map((s) => cpt[o + s]));
         const rem = 1 - kept, cur = sum(free.map((s) => cpt[o + s]));
+        const before = free.map((s) => cpt[o + s]);
         for (const s of free) cpt[o + s] = round(rem <= 0 ? 0 : cur > 0 ? (cpt[o + s] * rem) / cur : rem / free.length);
+        const changed = free.filter((s, i) => Math.abs(cpt[o + s] - before[i]) > 1e-12);
+        lastAdjust = changed.length ? { offset: o, states: changed } : null;
       });
       pins.set.add(c);
     }

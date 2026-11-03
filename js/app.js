@@ -19,27 +19,12 @@
 
   // ------------------------------------------------------------ state & history
 
-  function sample() {
-    const n = M.createNetwork("Wet grass");
-    const add = (name, labels, x, y) => M.addNode(n, { name, labels, x, y });
-    const c = add("cloudy", ["no", "yes"], 300, 80);
-    const s = add("sprinkler", ["off", "on"], 160, 200);
-    const r = add("rain", ["no", "yes"], 440, 200);
-    const w = add("wet_grass", ["no", "yes"], 300, 320);
-    M.addArc(n, c.id, s.id); M.addArc(n, c.id, r.id); M.addArc(n, s.id, w.id); M.addArc(n, r.id, w.id);
-    c.cpt = [0.5, 0.5];
-    s.cpt = [0.5, 0.5, 0.9, 0.1];
-    r.cpt = [0.8, 0.2, 0.2, 0.8];
-    w.cpt = [1, 0, 0.1, 0.9, 0.1, 0.9, 0.01, 0.99];
-    return n;
-  }
-
   function load() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (saved && Array.isArray(saved.nodes)) return saved;
     } catch {}
-    return sample();
+    return BNDemos[0].build();
   }
 
   function save() {
@@ -219,7 +204,7 @@
     }
     viewport.innerHTML = parts.join("");
     if (!net.nodes.length) {
-      viewport.innerHTML += `<text x="${(svg.clientWidth / 2 - view.x) / view.k}" y="${(svg.clientHeight / 2 - view.y) / view.k}" text-anchor="middle" fill="currentColor" opacity="0.45">Double-click anywhere to add a node</text>`;
+      viewport.innerHTML += `<text x="${(svg.clientWidth / 2 - view.x) / view.k}" y="${(svg.clientHeight / 2 - view.y) / view.k}" text-anchor="middle" fill="currentColor" opacity="0.45">Double-click anywhere to add a node, or load one from Demo</text>`;
     }
   }
 
@@ -518,7 +503,7 @@
         <dt>Rename</dt><dd>Double-click a node, or select it and press <kbd>Enter</kbd>.</dd>
         <dt>Select</dt><dd>Click; <kbd>Ctrl</kbd>-click to add; <kbd>Shift</kbd>-drag on empty space for a box; <kbd>Ctrl</kbd>+<kbd>A</kbd> for all.</dd>
         <dt>Move</dt><dd>Drag nodes, or nudge with arrow keys. Drag empty space to pan, scroll to zoom, <kbd>F</kbd> to fit.</dd>
-        <dt>Probabilities</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (auto-balance keeps rows summing to 1), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
+        <dt>Probabilities</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (with “Keep rows summing to 1” on, the rest of the row is adjusted for you), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
         <dt>Delete / duplicate</dt><dd><kbd>Del</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd>. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</dd>
         <dt>pyAgrum</dt><dd>Export writes <code>import pyagrum as gum</code> code; <kbd>Ctrl</kbd>+<kbd>S</kbd> downloads it. Import accepts that code, hand-written <code>gum.BayesNet</code> code, and <code>gum.fastBN</code>. You can also drop a .py file on the canvas.</dd>
       </dl>`;
@@ -752,6 +737,7 @@
       select([]);
     },
     import: openImport,
+    demo: () => toggleDemoMenu(),
     export: openExport,
     undo, redo,
     add: () => addNodeShortcut(true),
@@ -761,6 +747,39 @@
     "download-export": downloadPython,
     "do-import": finishImport,
   };
+  const demoMenu = $("#demo-menu");
+  demoMenu.innerHTML = BNDemos.map((d) => `<button role="menuitem" data-demo="${d.id}"><b>${esc(d.label)}</b><span>${esc(d.detail)}</span></button>`).join("");
+  function toggleDemoMenu(open = demoMenu.hidden) {
+    demoMenu.hidden = !open;
+    document.querySelector('[data-action="demo"]').setAttribute("aria-expanded", open);
+    if (open) demoMenu.querySelector("button").focus();
+  }
+  demoMenu.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-demo]");
+    if (!b) return;
+    const demo = BNDemos.find((d) => d.id === b.dataset.demo);
+    toggleDemoMenu(false);
+    change(() => { net = demo.build(); });
+    select([]);
+    fit();
+    toast(`Loaded the ${demo.label} demo (Ctrl+Z to go back)`);
+  });
+  demoMenu.addEventListener("keydown", (e) => {
+    e.stopPropagation(); // keep arrow keys from moving selected nodes
+    const items = [...demoMenu.querySelectorAll("button")];
+    const i = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+    } else if (e.key === "Escape") {
+      toggleDemoMenu(false);
+      document.querySelector('[data-action="demo"]').focus();
+    }
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (!demoMenu.hidden && !e.target.closest("#demo-menu, [data-action='demo']")) toggleDemoMenu(false);
+  });
+
   document.addEventListener("click", (e) => {
     const b = e.target.closest("[data-action]");
     if (b && actions[b.dataset.action]) { e.preventDefault(); actions[b.dataset.action](); }

@@ -6,13 +6,15 @@ It is a static site with no build step: serve the directory with any static file
 
 ## Editing
 
+- **Demo networks:** the **Demo** menu loads a ready-made network for testing: Wet grass, Asia, one with every variable type, or a random 12-variable network. `Ctrl+Z` brings back what you had.
+
 - **Add a node:** double-click empty space (or press `N`), type a name, press `Enter`.
 - **Add an arc:** drag from the dot under a node onto another node, or `Shift`-drag a node. Dropping on empty space creates a new child node.
 - **Rename:** double-click a node, or select it and press `Enter`.
 - **States:** edit them in the side panel. `Enter` adds a state and `Backspace` on an empty state removes it.
 - **Probabilities:** the selected variable's CPT appears in a resizable table under the canvas (press `C` to jump to it). It works like a spreadsheet:
   - Type in a cell to replace its value; `0.3`, `30%` and `1/3` are all accepted. `Enter`, `Tab` and the arrow keys move between cells, and `Shift`+arrows extend the selection.
-  - With **Auto-balance** on, the other states in the row are rescaled so the row still sums to 1. States you have already typed in that row are kept, so typing all but one state fills in the last.
+  - With **Keep rows summing to 1** on (the default), typing a value rescales the row's other states so the row still sums to 1. For example, typing `0.8` into `0.5 · 0.3 · 0.2` gives `0.8 · 0.12 · 0.08`. Values you have typed in a row are kept while you stay in it, so typing all but one state fills in the last. The adjusted cells flash, and the `?` button next to the option explains it.
   - Drag the dividers in a row's bar to move probability between neighbouring states (hold `Shift` for finer steps). Double-click a bar segment to give that state 100%.
   - `Ctrl+C` / `Ctrl+V` work with Excel and Google Sheets. Pasting a smaller block into a larger selection repeats it, so you can copy one row and paste it into many. `Ctrl+D` fills down and `Delete` sets cells to 0.
   - Click a parent cell to select all the rows under it, or a state header to select its column. Filters in the parent headers narrow down large tables.
