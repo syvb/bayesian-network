@@ -80,6 +80,16 @@ When the code builds several networks, the Import dialog lets you choose which o
 
 The importer is checked against pyAgrum itself: scripts and notebooks from pyAgrum's documentation and GitHub, and the bnlearn benchmark networks (alarm, hailfinder, andes, pathfinder, link, munin with 1,041 variables, ...) written out as pyAgrum code, import to exactly the CPTs pyAgrum computes.
 
+## Development tools
+
+The site needs no build; serve the repository root with any static server (`python3 -m http.server`). The scripts in `tools/` check the editor from Node; the pyAgrum checks need `pip install pyagrum` (set `PYTHON` to use a particular interpreter).
+
+- `node tools/roundtrip.mjs [script.py ...]`: exports every demo (and each given script) to pyAgrum code, imports it again and checks nothing changed.
+- `node tools/check-import.mjs [script.py ...]`: runs each script with real pyAgrum and imports it with the editor, then compares variables, parents and CPTs. With no arguments it checks the demos' exported code.
+- `node tools/check-inference.mjs`: compares the editor's probabilities with pyAgrum's `LazyPropagation` on the demos and random networks, with hard and likelihood evidence.
+- `python3 tools/bif2py.py network.bif out.py`: writes a `.bif` network (such as the [bnlearn repository](https://www.bnlearn.com/bnrepository/)'s) as a pyAgrum script, to import or check.
+- `tools/og-image.sh`: regenerates `og-image.png`, the social preview (needs `agent-browser`, ImageMagick and `zopflipng`).
+
 ## License
 
 [Apache License 2.0](LICENSE).
