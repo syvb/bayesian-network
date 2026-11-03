@@ -231,7 +231,7 @@ button.collapse:hover { color: var(--text); }
 .dock-empty { color: var(--muted); padding: 10px 14px; margin: 0; }
 
 .cpt-scroll { flex: 1; min-height: 0; overflow: auto; outline: none; }
-table.cpt-grid { border-collapse: separate; border-spacing: 0; margin: 0 auto; max-width: 100%; font-size: 15px; font-variant-numeric: tabular-nums; }
+table.cpt-grid { border-collapse: separate; border-spacing: 0; margin: 0; max-width: 100%; font-size: 15px; font-variant-numeric: tabular-nums; }
 .cpt-grid th, .cpt-grid td { border-bottom: 1px solid var(--border); padding: 0 10px; height: 36px; white-space: nowrap; }
 .cpt-grid thead th {
   position: sticky;
