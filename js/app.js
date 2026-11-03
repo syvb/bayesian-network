@@ -7,6 +7,7 @@
   const SOFT_KEY = "bn-editor-soft-evidence";
   const SOFT_KIND_KEY = "bn-editor-soft-kind";
   const SRC_KEY = "bn-editor-loaded-src";
+  const PANEL_KEY = "bn-editor-panel-collapsed";
   const NODE_H = 50;
   // probability view: header, then one row per state with a bar
   const PROB_HEAD = 30, PROB_ROW = 18, PROB_BAR = 64, PROB_PCT = 44, PROB_LABEL_MAX = 110;
@@ -835,7 +836,19 @@
     }
   }
 
+  const side = $("#side"), panelStrip = $("#panel-strip");
+  function setPanelCollapsed(collapsed) {
+    side.classList.toggle("collapsed", collapsed);
+    $("#panel-toggle").setAttribute("aria-expanded", !collapsed);
+    localStorage.setItem(PANEL_KEY, collapsed ? "1" : "0");
+  }
+  $("#panel-toggle").addEventListener("click", () => setPanelCollapsed(true));
+  panelStrip.addEventListener("click", () => setPanelCollapsed(false));
+  setPanelCollapsed(localStorage.getItem(PANEL_KEY) === "1");
+
   function renderPanelContent() {
+    const one = selNodes.size === 1 ? M.getNode(net, [...selNodes][0]) : null;
+    panelStrip.textContent = one ? `Variable: ${one.name}` : selNodes.size > 1 ? `${selNodes.size} variables selected` : selArc ? "Arc" : `Network: ${net.name}`;
     if (selArc) return renderArcPanel();
     if (selNodes.size === 1) return renderNodePanel(M.getNode(net, [...selNodes][0]));
     if (selNodes.size > 1) {

@@ -170,14 +170,33 @@ main { flex: 1; display: flex; min-height: 0; }
   z-index: 5;
 }
 
+#side { position: relative; flex: none; display: flex; border-left: 1px solid var(--border); background: var(--surface); }
 #panel {
   width: clamp(300px, 30vw, 400px);
-  flex: none;
   overflow: auto;
-  border-left: 1px solid var(--border);
-  background: var(--surface);
   padding: 12px 14px 40px;
 }
+#panel-toggle { position: absolute; top: 9px; right: 8px; z-index: 2; font-size: 18px; line-height: 1; padding: 2px 6px; }
+#panel-toggle:hover, #panel-strip:hover { color: var(--accent); }
+#panel-strip { display: none; }
+/* Collapsed, the side panel is a strip naming what it would show; clicking it opens the panel again. */
+#side.collapsed #panel, #side.collapsed #panel-toggle { display: none; }
+#side.collapsed #panel-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 34px;
+  padding: 12px 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  writing-mode: vertical-rl;
+  white-space: nowrap;
+  overflow: hidden;
+}
+#panel-strip::before { content: "‹"; writing-mode: horizontal-tb; font-size: 18px; }
 #panel h2 { font-size: 15px; margin: 0 0 10px; }
 #panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 18px 0 6px; display: flex; align-items: center; gap: 6px; }
 #panel h3 .grow { flex: 1; }
@@ -289,7 +308,7 @@ button.collapse:hover { color: var(--text); }
 
 .cpt-scroll { flex: 1; min-height: 0; overflow: auto; outline: none; }
 table.cpt-grid { border-collapse: separate; border-spacing: 0; margin: 0; max-width: 100%; font-size: 15px; font-variant-numeric: tabular-nums; }
-.cpt-grid th, .cpt-grid td { border-bottom: 1px solid var(--border); padding: 0 10px; height: 36px; white-space: nowrap; }
+.cpt-grid th, .cpt-grid td { border-bottom: 1px solid var(--border); padding: 0 10px; height: 30px; white-space: nowrap; }
 .cpt-grid thead th {
   position: sticky;
   top: 0;
@@ -429,6 +448,33 @@ input.cell-edit {
 @keyframes cell-adjusted { from { background-color: color-mix(in srgb, var(--accent) 35%, transparent); } }
 .cpt-grid td.cell.adjusted { animation: cell-adjusted 1.6s ease-out; }
 .dock-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.row-actions { position: relative; display: inline-flex; }
+.row-action-list { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.compact-only { display: none; }
+/* One-line header (see fitHeader in cpt.js): nothing may shrink, so overflow can be measured. */
+.dock-head.single, .dock-head.single .dock-tools { flex-wrap: nowrap; }
+.dock-head.single > *, .dock-head.single .dock-tools > * { flex-shrink: 0; white-space: nowrap; }
+.dock-head.compact .full-only { display: none; }
+.dock-head.compact .compact-only { display: inline; }
+.dock-head.compact button.compact-only { display: inline-block; }
+.dock-head.compact .row-action-list {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+}
+.dock-head.compact .row-actions.open .row-action-list { display: flex; }
+.dock-head.compact .row-action-list .scope { font-size: 11px; padding: 0 2px 2px; }
+.dock-head.compact .row-action-list button { text-align: left; }
+#cpt-dock.compact .dist-hint { display: none; }
 .nowrap { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 
 /* ---------------------------------------------------------------- probabilities & evidence */

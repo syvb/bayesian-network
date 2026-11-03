@@ -118,6 +118,32 @@
       paintSelection();
     }
 
+    // The header uses one line with full labels if that fits, else one line with compact labels
+    // (row actions in a "Rows" menu), else wraps with full labels.
+    function fitHeader() {
+      const overflows = () => head.scrollWidth > head.clientWidth + 1;
+      head.classList.remove("compact");
+      head.classList.add("single");
+      if (overflows()) {
+        head.classList.add("compact");
+        if (overflows()) head.classList.remove("compact", "single");
+      }
+      dock.classList.toggle("compact", head.classList.contains("compact"));
+    }
+    let headWidth = 0;
+    new ResizeObserver(() => {
+      if (head.clientWidth !== headWidth) { headWidth = head.clientWidth; fitHeader(); }
+    }).observe(head);
+
+    function setRowMenu(open) {
+      const actions = head.querySelector(".row-actions");
+      if (!actions) return;
+      actions.classList.toggle("open", open);
+      head.querySelector('[data-cpt="row-menu"]').setAttribute("aria-expanded", open);
+    }
+    document.addEventListener("pointerdown", (e) => { if (!e.target.closest(".row-actions")) setRowMenu(false); });
+    head.addEventListener("keydown", (e) => { if (e.key === "Escape") setRowMenu(false); });
+
     function collapseButton() {
       return `<button class="icon collapse" data-cpt="collapse" title="${prefs.collapsed ? "Expand" : "Collapse"}">${prefs.collapsed ? "▴" : "▾"}</button>`;
     }
@@ -129,18 +155,21 @@
         <span class="dock-title">P(<b>${esc(n.name)}</b>${given})</span>
         <span class="dock-status${bad ? " bad" : ""}">${bad
           ? `${bad} of ${total} row${total > 1 ? "s" : ""} ${bad > 1 ? "don't" : "doesn't"} sum to 1 · <button class="linkish" data-cpt="fix-all">Normalize ${bad > 1 ? "them" : "it"}</button>`
-          : `✓ ${total > 1 ? `All ${total} rows sum` : "Sums"} to 1`}</span>
+          : `<span title="${total > 1 ? `All ${total} rows sum` : "Sums"} to 1">✓<span class="full-only"> ${total > 1 ? `All ${total} rows sum` : "Sums"} to 1</span></span>`}</span>
         <span class="dock-tools">
-        <span class="nowrap"><span class="scope muted"></span>
-        <button class="small" data-cpt="normalize" title="Scale each row so it sums to 1">Normalize</button>
-        <button class="small" data-cpt="uniform">Uniform</button>
-        <button class="small" data-cpt="random">Random</button></span>
-        <span class="sep"></span>
+        <span class="row-actions">
+          <button class="small compact-only" data-cpt="row-menu" aria-haspopup="true" aria-expanded="false" title="Normalize, uniform or random rows">Rows ▾</button>
+          <span class="row-action-list"><span class="scope muted"></span>
+          <button class="small" data-cpt="normalize" title="Scale each row so it sums to 1">Normalize</button>
+          <button class="small" data-cpt="uniform">Uniform</button>
+          <button class="small" data-cpt="random">Random</button></span>
+        </span>
+        <span class="sep full-only"></span>
         <span class="seg-toggle" role="group" aria-label="Number format">
           <button class="small${prefs.percent ? "" : " on"}" data-cpt="mode-prob" title="Show probabilities">0.25</button><button class="small${prefs.percent ? " on" : ""}" data-cpt="mode-pct" title="Show percentages">25%</button>
         </span>
         <span class="nowrap"><label class="check" title="When you type a value, the other states in that row are adjusted so the row still sums to ${prefs.percent ? "100%" : "1"}">
-          <input type="checkbox" data-cpt="balance"${prefs.balance ? " checked" : ""}> Keep rows summing to ${prefs.percent ? "100%" : "1"}
+          <input type="checkbox" data-cpt="balance"${prefs.balance ? " checked" : ""}> <span class="full-only">Keep rows summing to ${prefs.percent ? "100%" : "1"}</span><span class="compact-only">Auto-sum</span>
         </label>
         <button class="help-button" popovertarget="balance-help" title="How does this work?" aria-label="How keeping rows summing to 1 works">?</button>
         ${collapseButton()}</span>
@@ -183,7 +212,7 @@
         parents.map((p) => `<th class="pcol"><div class="pname">${esc(p.name)}</div><select data-filter="${p.id}" title="Show only rows where ${esc(p.name)} has this state">
             <option value="">all</option>${p.labels.map((l, i) => `<option value="${i}"${filters.get(p.id) === i ? " selected" : ""}>${esc(l)}</option>`).join("")}
           </select></th>`).join("") +
-        `<th class="bar-h" data-selall title="Select all rows">Distribution <span class="muted">drag dividers · double-click a state for 100%</span></th>` +
+        `<th class="bar-h" data-selall title="Select all rows">Distribution <span class="muted dist-hint">drag dividers · double-click a state for 100%</span></th>` +
         n.labels.map((l, s) => `<th class="state" data-col="${s}" title="Select this column"><i class="sw" style="background:${stateColors(n.labels)[s][0]}"></i>${esc(l)}</th>`).join("") +
         `<th class="status-h"></th>`;
       const body = shown.map((row, r) => {
@@ -286,6 +315,7 @@
       if (scope) {
         const { label } = scopeRows();
         scope.textContent = label ? `Applies to ${label}:` : "";
+        fitHeader(); // the label's length can change which header layout fits
       }
       if (!sel) return;
       const { r0, r1, c0, c1 } = range();
@@ -637,6 +667,8 @@
         if (b && b.dataset.cpt === "collapse") toggleCollapse();
         return;
       }
+      if (b.dataset.cpt === "row-menu") { setRowMenu(!head.querySelector(".row-actions").classList.contains("open")); return; }
+      setRowMenu(false);
       const offsets = scopeRows().list.map((r) => r.offset);
       switch (b.dataset.cpt) {
         case "normalize": mutateRows(offsets, normalizeRow); break;
