@@ -11,7 +11,17 @@
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const round = (v) => +v.toPrecision(12);
   const sum = (xs) => xs.reduce((a, b) => a + b, 0);
-  const color = (s) => PALETTE[s % PALETTE.length];
+  // States that read as yes/no get green/red; the others take palette colours, skipping green and
+  // red so they can't be mistaken for one.
+  const GREEN = PALETTE[2], RED = PALETTE[3];
+  const TRUTHY = new Set(["yes", "y", "true", "t", "on", "present", "positive", "pos", "success", "pass"]);
+  const FALSY = new Set(["no", "n", "false", "f", "off", "absent", "negative", "neg", "none", "failure", "fail"]);
+  function stateColors(labels) {
+    const kind = labels.map((l) => { const k = String(l).trim().toLowerCase(); return TRUTHY.has(k) ? GREEN : FALSY.has(k) ? RED : null; });
+    const palette = kind.some(Boolean) ? PALETTE.filter((c) => c !== GREEN && c !== RED) : PALETTE;
+    let i = 0;
+    return kind.map((c) => c || palette[i++ % palette.length]);
+  }
 
   // Accepts 0.3, .3, 30%, 1/3 (and in percent mode, 30 means 30%).
   function parseProb(text, percent) {
@@ -140,9 +150,10 @@
     function barHTML(vals) {
       const scale = Math.max(1, sum(vals.map((v) => Math.max(0, v))));
       let acc = 0, segs = "", handles = "";
+      const colors = stateColors(node().labels);
       vals.forEach((v, s) => {
         const w = (Math.max(0, v) / scale) * 100;
-        const [bg, fg] = color(s);
+        const [bg, fg] = colors[s];
         const corners = `${s === 0 ? "5px" : "0"} ${s === vals.length - 1 ? "5px 5px" : "0 0"} ${s === 0 ? "5px" : "0"}`;
         segs += `<div class="seg" data-seg="${s}" title="${Math.round(v * 1000) / 10}%" style="left:${acc}%;width:${w}%;background:${bg};color:${fg};border-radius:${corners}">${w >= 9 ? Math.round(v * 100) + "%" : ""}</div>`;
         acc += w;
@@ -173,7 +184,7 @@
             <option value="">all</option>${p.labels.map((l, i) => `<option value="${i}"${filters.get(p.id) === i ? " selected" : ""}>${esc(l)}</option>`).join("")}
           </select></th>`).join("") +
         `<th class="bar-h" data-selall title="Select all rows">Distribution <span class="muted">drag dividers · double-click a state for 100%</span></th>` +
-        n.labels.map((l, s) => `<th class="state" data-col="${s}" title="Select this column"><i class="sw" style="background:${color(s)[0]}"></i>${esc(l)}</th>`).join("") +
+        n.labels.map((l, s) => `<th class="state" data-col="${s}" title="Select this column"><i class="sw" style="background:${stateColors(n.labels)[s][0]}"></i>${esc(l)}</th>`).join("") +
         `<th class="status-h"></th>`;
       const body = shown.map((row, r) => {
         const vals = n.cpt.slice(row.offset, row.offset + n.labels.length);
@@ -224,7 +235,7 @@
       const cond = curParents.length ? curParents.map((p, k) => `${esc(p.name)} = <b>${esc(p.labels[row.idx[k]])}</b>`).join(", ") : "No parents";
       const now = rowVals(d.r);
       const pct = (v) => +(v * 100).toFixed(1) + "%";
-      const change = [d.i, d.i + 1].map((s) => `<span><i class="sw" style="background:${color(s)[0]}"></i>${esc(n.labels[s])} ${pct(d.vals[s])} → <b>${pct(now[s])}</b></span>`).join("");
+      const change = [d.i, d.i + 1].map((s) => `<span><i class="sw" style="background:${stateColors(n.labels)[s][0]}"></i>${esc(n.labels[s])} ${pct(d.vals[s])} → <b>${pct(now[s])}</b></span>`).join("");
       tip.innerHTML = `<div class="tip-cond">${cond}</div><div class="tip-change">${change}</div>`;
       tip.hidden = false;
       const x = Math.min(window.innerWidth - tip.offsetWidth - 8, e.clientX + 14);
