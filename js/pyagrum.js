@@ -3,6 +3,7 @@
   "use strict";
   const M = globalThis.BNModel;
   const LAYOUT_TAG = "# bn-editor-layout:";
+  const EVIDENCE_TAG = "# bn-editor-evidence:";
 
   // ---------------------------------------------------------------- export
 
@@ -19,7 +20,8 @@
     }
   }
 
-  function exportPython(net) {
+  // evidence: node id -> state index (hard), likelihoods (soft), or {target: probabilities}.
+  function exportPython(net, evidence = new Map()) {
     const out = ["import pyagrum as gum", "", `bn = gum.BayesNet(${py(net.name)})`, ""];
     for (const n of net.nodes) out.push(`bn.add(${variableCode(n)})`);
     if (net.arcs.length) out.push("");
@@ -40,8 +42,38 @@
     }
     const layout = {};
     for (const n of net.nodes) layout[n.name] = [Math.round(n.x), Math.round(n.y)];
-    out.push("", "# Node positions for the visual editor (ignored by pyAgrum).", LAYOUT_TAG + " " + JSON.stringify(layout), "");
+    out.push("", "# Node positions for the visual editor (ignored by pyAgrum).", LAYOUT_TAG + " " + JSON.stringify(layout));
+    if (evidence.size) out.push("", ...evidenceCode(net, evidence));
+    out.push("");
     return out.join("\n");
+  }
+
+  // The evidence twice: as pyAgrum calls that reproduce the editor's probabilities, and as a comment
+  // the importer reads back exactly. pyAgrum's setEvidence takes a state or likelihoods; probabilities
+  // set directly (Jeffrey's rule) become the likelihoods that give them, given the other evidence.
+  function evidenceCode(net, evidence) {
+    const saved = {}, calls = [], notes = [];
+    const targets = [...evidence].some(([, v]) => v && v.target);
+    const solved = targets && globalThis.BNInference ? globalThis.BNInference.posteriors(net, evidence) : null;
+    for (const [id, v] of evidence) {
+      const n = M.getNode(net, id);
+      if (v && v.target) {
+        saved[n.name] = { target: v.target };
+        const lik = solved && solved.likelihoods && solved.likelihoods.get(id);
+        if (lik) {
+          calls.push(`${py(n.name)}: ${list(lik, (x) => num(+x.toPrecision(12)))}`);
+          notes.push(`# ${n.name}: probabilities set to ${list(v.target, (x) => num(+x.toPrecision(6)))} in the editor; these likelihoods give them.`);
+        }
+      } else {
+        saved[n.name] = Array.isArray(v) ? v : n.labels[v];
+        calls.push(`${py(n.name)}: ${Array.isArray(v) ? list(v, num) : py(n.labels[v])}`);
+      }
+    }
+    const out = ["# Evidence set in the editor. With it, pyAgrum computes the probabilities the editor shows."];
+    // Skip the calls when the probabilities can't be reached: setEvidence would then apply only part of the evidence.
+    if (calls.length && !(targets && !(solved && solved.likelihoods))) out.push(...notes, "ie = gum.LazyPropagation(bn)", `ie.setEvidence({${calls.join(", ")}})`, "ie.makeInference()");
+    out.push(EVIDENCE_TAG + " " + JSON.stringify(saved));
+    return out;
   }
 
   // ---------------------------------------------------------------- import
@@ -631,10 +663,13 @@
       }
     }
 
-    let layout = null;
+    let layout = null, evidence = null;
     for (const c of result.comments) {
-      if (!c.text.startsWith(LAYOUT_TAG)) continue;
-      try { layout = JSON.parse(c.text.slice(LAYOUT_TAG.length)); } catch { lineWarnings.push(`${lineLabel(c.line)}: could not read the layout comment`); }
+      const tag = [LAYOUT_TAG, EVIDENCE_TAG].find((t) => c.text.startsWith(t));
+      if (!tag) continue;
+      let value;
+      try { value = JSON.parse(c.text.slice(tag.length)); } catch { lineWarnings.push(`${lineLabel(c.line)}: could not read the ${tag === LAYOUT_TAG ? "layout" : "evidence"} comment`); continue; }
+      if (tag === LAYOUT_TAG) layout = value; else evidence = value;
     }
 
     for (const what of otherModels) warnings.unshift(`This script builds ${what}, which the editor doesn't support (only Bayesian networks)`);
@@ -669,7 +704,8 @@
     if (layout && net.nodes.every((n) => Array.isArray(layout[n.name]))) {
       for (const n of net.nodes) [n.x, n.y] = layout[n.name];
     } else M.autoLayout(net);
-    return { net, warnings: warnings.concat(capWarnings(lineWarnings)), layout, networks, picked };
+    // evidence: node name -> state label, likelihoods or {target}, as saved by exportPython
+    return { net, warnings: warnings.concat(capWarnings(lineWarnings)), layout, evidence, networks, picked };
   }
 
   function nameList(names, max = 8) {

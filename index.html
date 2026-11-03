@@ -91,14 +91,15 @@
   <dialog id="import-dialog">
     <form method="dialog">
       <h2>Import pyAgrum code</h2>
-      <p class="muted">Paste Python that builds a <code>gum.BayesNet</code> or calls <code>gum.fastBN</code>, or open a <code>.py</code> file, a Jupyter notebook, or a PNG or SVG exported from this editor. The code runs in a sandboxed Python interpreter inside this page; plotting and inference calls are ignored.</p>
+      <p class="muted">Paste Python that builds a <code>gum.BayesNet</code> or calls <code>gum.fastBN</code>, or open a <code>.py</code> file, a Jupyter notebook, or a PNG or SVG exported from this editor. The code runs in a sandboxed Python interpreter inside this page; plotting and inference calls are ignored. Evidence saved by this editor's export is restored.</p>
       <textarea id="import-code" spellcheck="false" placeholder='import pyagrum as gum&#10;bn = gum.fastBN("a->b<-c")'></textarea>
       <label id="import-networks" class="import-networks" hidden>Network <select id="import-pick"></select> <span class="muted" id="import-networks-note"></span></label>
-      <ul id="import-warnings" class="warn"></ul>
+      <div id="import-result" class="import-result" role="status" hidden></div>
       <div class="dialog-actions">
         <label class="file-button">Open file…<input id="import-file" type="file" accept=".py,.ipynb,.png,.svg,text/x-python,text/plain,application/x-ipynb+json,image/png,image/svg+xml" hidden></label>
         <span class="grow"></span>
-        <button value="close">Cancel</button>
+        <button value="close" id="import-cancel">Cancel</button>
+        <button type="button" data-action="undo-import" id="import-undo" hidden title="Go back to the network you had before importing">Undo import</button>
         <button type="button" data-action="do-import" class="primary">Import</button>
       </div>
     </form>

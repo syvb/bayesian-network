@@ -1,6 +1,7 @@
 // Checks the editor's exact inference against pyAgrum's LazyPropagation: posteriors of every
 // variable and P(evidence), on the demos and on random networks, with no evidence, hard evidence
-// and likelihood (soft) evidence. Usage: node tools/check-inference.mjs   (set PYTHON to pick the python)
+// likelihood (soft) evidence and target probabilities. Each case runs the editor's own export, whose
+// setEvidence call carries the evidence, so this also checks the exported evidence. Usage: node tools/check-inference.mjs   (set PYTHON to pick the python)
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,23 +15,29 @@ const shuffled = (xs) => xs.map((x) => [Math.random(), x]).sort((a, b) => a[0] -
 
 const cases = [];
 nets.forEach((net, i) => {
-  const file = path.join(tmp, `net${i}.py`);
-  fs.writeFileSync(file, P.exportPython(net));
   const evidences = [new Map()];
   for (const count of [1, 2]) evidences.push(new Map(shuffled(net.nodes).slice(0, count).map((n) => [n.id, Math.floor(Math.random() * n.labels.length)])));
   const soft = shuffled(net.nodes)[0];
   evidences.push(new Map([[soft.id, soft.labels.map(() => +Math.random().toFixed(3))]]));
-  for (const ev of evidences) {
+  const [target, other] = shuffled(net.nodes);
+  const q = target.labels.map(() => 0.05 + Math.random());
+  evidences.push(new Map([[target.id, { target: q.map((x) => x / q.reduce((a, b) => a + b)) }], [other.id, Math.floor(Math.random() * other.labels.length)]]));
+  evidences.forEach((ev, j) => {
     const r = I.posteriors(net, ev);
+    const file = path.join(tmp, `net${i}-${j}.py`);
+    fs.writeFileSync(file, P.exportPython(net, ev));
+    const back = P.importPython(fs.readFileSync(file, "utf8")).evidence || {};
+    const same = [...ev].every(([id, v]) => { const n = M.getNode(net, id); return JSON.stringify(back[n.name]) === JSON.stringify(typeof v === "number" ? n.labels[v] : v); });
+    if (!same || Object.keys(back).length !== ev.size) { console.log("evidence didn't survive export and import:", file); process.exitCode = 1; }
     cases.push({
       file,
       // a state index becomes its label; a likelihood list stays a list, as pyAgrum's setEvidence takes both
-      evidence: Object.fromEntries([...ev].map(([id, v]) => { const n = M.getNode(net, id); return [n.name, Array.isArray(v) ? v : n.labels[v]]; })),
+      evidence: Object.fromEntries([...ev].map(([id, v]) => { const n = M.getNode(net, id); return [n.name, typeof v === "number" ? n.labels[v] : v]; })),
       error: r.error || null,
       pEvidence: r.pEvidence ?? null,
       marginals: r.marginals ? Object.fromEntries([...r.marginals].map(([id, p]) => [M.getNode(net, id).name, [...p]])) : null,
     });
-  }
+  });
 });
 fs.writeFileSync(path.join(tmp, "cases.json"), JSON.stringify(cases));
 
@@ -38,8 +45,14 @@ const check = `
 import json, runpy, sys, pyagrum as gum
 cases = json.load(open(sys.argv[1])); worst = 0; bad = 0
 for c in cases:
-    ie = gum.LazyPropagation(runpy.run_path(c["file"])["bn"])
-    if c["evidence"]: ie.setEvidence(c["evidence"])
+    # pyAgrum has no target probabilities, so evidence the editor rejects because of them can't be compared
+    if c["error"] and any(isinstance(v, dict) for v in c["evidence"].values()): continue
+    g = runpy.run_path(c["file"])
+    # the export sets the evidence itself, except evidence the editor found impossible
+    ie = g.get("ie") or gum.LazyPropagation(g["bn"])
+    if c["error"] and c["evidence"] and "ie" not in g:
+        ev = {k: v for k, v in c["evidence"].items() if not isinstance(v, dict)}
+        if ev: ie.setEvidence(ev)
     try:
         ie.makeInference()
     except Exception as e:
@@ -51,7 +64,10 @@ for c in cases:
         except Exception: agree = True
         if not agree: print("the editor failed but pyAgrum did not:", c["file"], c["evidence"], c["error"]); bad += 1
         continue
-    worst = max(worst, abs((ie.evidenceProbability() if c["evidence"] else 1.0) - c["pEvidence"]))
+    hard = any(not isinstance(v, dict) for v in c["evidence"].values())
+    # P(evidence) in the editor leaves out target probabilities; pyAgrum's includes their likelihoods
+    if not any(isinstance(v, dict) for v in c["evidence"].values()):
+        worst = max(worst, abs((ie.evidenceProbability() if hard else 1.0) - c["pEvidence"]))
     for name, p in c["marginals"].items():
         worst = max(worst, max(abs(a - b) for a, b in zip(p, ie.posterior(name).tolist())))
 print(f"{len(cases)} cases, {bad} disagreements, largest probability difference {worst:.2e}")

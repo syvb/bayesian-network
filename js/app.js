@@ -19,6 +19,7 @@
   let selNodes = new Set();
   let selArc = null; // {from, to}
   let view = { x: 0, y: 0, k: 1 };
+  let fitted = true; // the view is the one Fit chose (no pan or zoom since), so resizing re-fits it
   let undoStack = [], redoStack = [];
   let drag = null;
   let lastPointer = null; // world coordinates of the pointer, used by the N shortcut
@@ -168,6 +169,7 @@
   }
 
   function fit() {
+    fitted = true;
     if (!net.nodes.length) { view = { x: 0, y: 0, k: 1 }; applyView(); return; }
     const r = svg.getBoundingClientRect();
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -608,6 +610,7 @@
       drag.moved = true;
       svg.classList.add("panning");
       view.x = drag.vx + dx; view.y = drag.vy + dy;
+      fitted = false;
       applyView();
     } else if (drag.mode === "move") {
       const dx = p.x - drag.start.x, dy = p.y - drag.start.y;
@@ -677,10 +680,26 @@
     view.x = mx - ((mx - view.x) / view.k) * k;
     view.y = my - ((my - view.y) / view.k) * k;
     view.k = k;
+    fitted = false;
     applyView();
   }, { passive: false });
 
   window.addEventListener("resize", () => render());
+  // When the canvas changes size (window, side panel or table resized), a fitted view is fitted
+  // again; otherwise what was at the centre of the canvas stays at its centre, at the same zoom.
+  let canvasSize = null;
+  new ResizeObserver(() => {
+    const { width, height } = svg.getBoundingClientRect();
+    if (canvasSize && width && height && (width !== canvasSize.width || height !== canvasSize.height)) {
+      if (fitted) fit();
+      else {
+        view.x += (width - canvasSize.width) / 2;
+        view.y += (height - canvasSize.height) / 2;
+        applyView();
+      }
+    }
+    canvasSize = { width, height };
+  }).observe(svg);
 
   // ------------------------------------------------------------ inline rename
 
@@ -1011,15 +1030,20 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
+  // pyAgrum code for the network, with the current evidence (as setEvidence calls and a comment).
+  function exportCode() {
+    return P.exportPython(net, evidenceIndices());
+  }
+
   function downloadPython() {
-    download(new Blob([P.exportPython(net)], { type: "text/x-python" }), fileName(".py"));
+    download(new Blob([exportCode()], { type: "text/x-python" }), fileName(".py"));
   }
 
   // The canvas as it is shown now (with probabilities and evidence when that view is on), minus
   // the selection, with the pyAgrum code embedded so the image can be imported again.
   async function downloadImage(kind) {
     if (!net.nodes.length) { toast("The network is empty"); return; }
-    const code = P.exportPython(net);
+    const code = exportCode();
     const saved = { nodes: selNodes, arc: selArc };
     selNodes = new Set();
     selArc = null;
@@ -1052,25 +1076,42 @@
   }
 
   function openExport() {
-    $("#export-code").value = P.exportPython(net);
+    $("#export-code").value = exportCode();
     $("#export-warnings").textContent = exportWarnings();
     $("#export-dialog").showModal();
   }
 
+  // While the import dialog shows a result, how to take the import back: the undo depth before it
+  // and the evidence it replaced.
+  let importBefore = null;
+
   function openImport() {
-    $("#import-warnings").innerHTML = "";
-    $("#import-networks").hidden = true;
-    const btn = document.querySelector('[data-action="do-import"]');
-    btn.textContent = "Import";
-    btn.dataset.done = "";
+    importBefore = null;
+    showImportResult(null);
     $("#import-dialog").showModal();
     $("#import-code").focus();
   }
 
+  // result: null (nothing imported yet), {error, warnings} or {summary, warnings}.
+  function showImportResult(result) {
+    const box = $("#import-result");
+    box.hidden = !result;
+    box.className = "import-result " + (result && result.error ? "failed" : "ok");
+    if (result) {
+      const head = result.error ? `<b>Nothing was imported.</b> ${esc(result.error)}`
+        : `<b>✓ ${esc(result.summary)}</b>${result.warnings.length ? ` · ${result.warnings.length} warning${result.warnings.length > 1 ? "s" : ""}` : ""}`;
+      box.innerHTML = `<p>${head}</p>` + (result.warnings.length ? `<ul>${result.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : "");
+    }
+    const done = !!(result && !result.error);
+    document.querySelector('[data-action="do-import"]').textContent = done ? "Close" : "Import";
+    document.querySelector('[data-action="do-import"]').dataset.done = done ? "1" : "";
+    $("#import-cancel").hidden = done;
+    $("#import-undo").hidden = !done;
+  }
+
   // Returns true when a network was loaded. `pick` chooses among several networks built by the code.
   function importCode(src, pick) {
-    const { net: imported, warnings, networks = [], picked } = P.importPython(src, { pick });
-    $("#import-warnings").innerHTML = warnings.map((w) => `<li>${esc(w)}</li>`).join("");
+    const { net: imported, warnings, evidence: savedEvidence, networks = [], picked } = P.importPython(src, { pick });
     const multiple = networks.length > 1;
     $("#import-networks").hidden = !multiple;
     if (multiple) {
@@ -1078,13 +1119,38 @@
         `<option value="${i}"${i === picked ? " selected" : ""}>${esc(n.label)} (${n.nodes} variable${n.nodes === 1 ? "" : "s"}, ${n.arcs} arc${n.arcs === 1 ? "" : "s"})</option>`).join("");
       $("#import-networks-note").textContent = `The code builds ${networks.length} networks; pick the one to import.`;
     }
-    if (!imported) return false;
+    if (!imported) {
+      const [first = "The code doesn't build a network.", ...rest] = warnings;
+      showImportResult({ error: first, warnings: rest });
+      return false;
+    }
+    // Picking another network re-imports, so only the first import in this dialog records the state to go back to.
+    if (!importBefore) importBefore = { depth: undoStack.length, evidence };
     clearEvidence();
     change(() => { net = imported; });
+    if (savedEvidence) {
+      const byName = new Map(net.nodes.map((n) => [n.name, n.id]));
+      setEvidence(new Map(Object.entries(savedEvidence).filter(([name]) => byName.has(name)).map(([name, v]) => [byName.get(name), v])));
+    }
     select([]);
     fit();
-    toast(`Imported ${net.nodes.length} variables${warnings.length ? ` with ${warnings.length} warning${warnings.length > 1 ? "s" : ""}` : ""}`);
+    const plural = (k, w) => `${k} ${w}${k === 1 ? "" : "s"}`;
+    const evCount = evidence.size;
+    const summary = `Imported ${net.name ? `“${net.name}”: ` : ""}${plural(net.nodes.length, "variable")}, ${plural(net.arcs.length, "arc")}` +
+      (evCount ? `, evidence on ${plural(evCount, "variable")}` : "");
+    showImportResult({ summary, warnings });
+    toast(summary + (warnings.length ? ` with ${plural(warnings.length, "warning")}` : ""));
     return true;
+  }
+
+  function undoImport() {
+    if (!importBefore) return;
+    while (undoStack.length > importBefore.depth) undo();
+    setEvidence(importBefore.evidence);
+    fit();
+    importBefore = null;
+    $("#import-dialog").close();
+    toast("Import undone");
   }
 
   // Returns true when a network was loaded.
@@ -1094,15 +1160,17 @@
     if (text === undefined) text = await file.text();
     $("#import-code").value = text;
     if (!$("#import-dialog").open) openImport();
+    else showImportResult(null);
     return finishImport();
   }
 
+  // The dialog stays open to show warnings or a network picker; a clean import just closes it.
   function finishImport() {
     const btn = document.querySelector('[data-action="do-import"]');
     if (btn.dataset.done) { $("#import-dialog").close(); return false; }
+    importBefore = null;
     if (!importCode($("#import-code").value)) return false;
-    if ($("#import-warnings").children.length || !$("#import-networks").hidden) { btn.textContent = "Done"; btn.dataset.done = "1"; }
-    else $("#import-dialog").close();
+    if (!$("#import-result ul") && $("#import-networks").hidden) $("#import-dialog").close();
     return true;
   }
 
@@ -1144,10 +1212,8 @@
     }
   }
 
-  $("#import-code").addEventListener("input", () => {
-    const btn = document.querySelector('[data-action="do-import"]');
-    btn.textContent = "Import"; btn.dataset.done = "";
-  });
+  // Editing the code after an import offers to import it again.
+  $("#import-code").addEventListener("input", () => { if (importBefore) showImportResult(null); });
   $("#import-pick").addEventListener("change", (e) => importCode($("#import-code").value, +e.target.value));
   $("#import-file").addEventListener("change", (e) => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ""; });
 
@@ -1182,6 +1248,7 @@
     "download-svg": () => downloadImage("svg"),
     "download-png": () => downloadImage("png"),
     "do-import": finishImport,
+    "undo-import": undoImport,
   };
   const demoMenu = $("#demo-menu");
   demoMenu.innerHTML = BNDemos.map((d) => `<button role="menuitem" data-demo="${d.id}"><b>${esc(d.label)}</b><span>${esc(d.detail)}</span></button>`).join("");
