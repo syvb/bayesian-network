@@ -73,8 +73,38 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
-.brand { margin-right: 8px; }
-.brand abbr { text-decoration: none; }
+.brand { margin-right: 8px; position: relative; cursor: default; }
+/* A hover bubble spelling out "BN", styled like .drag-tip */
+.brand::after, .brand::before {
+  position: absolute;
+  left: 0;
+  z-index: 50;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-3px);
+  transition: opacity 0.12s, transform 0.12s;
+}
+.brand::after {
+  content: attr(data-tip);
+  top: calc(100% + 10px);
+  padding: 5px 9px;
+  border-radius: 7px;
+  background: var(--text);
+  color: var(--surface);
+  font-size: 12px;
+  font-weight: normal;
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
+}
+.brand::before {
+  content: "";
+  top: calc(100% + 4px);
+  left: 14px;
+  border: 6px solid transparent;
+  border-top: 0;
+  border-bottom-color: var(--text);
+}
+.brand:hover::after, .brand:hover::before { opacity: 1; transform: none; transition-delay: 0.25s; }
 .sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
 .grow { flex: 1; }
 .hint, .muted { color: var(--muted); font-size: 12px; }
