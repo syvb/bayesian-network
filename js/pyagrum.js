@@ -44,554 +44,742 @@
     return out.join("\n");
   }
 
-  // ---------------------------------------------------------------- tokenizer
+  // ---------------------------------------------------------------- import
 
-  class PyError extends Error {}
+  // Import runs the script in MiniPy (js/python.js), a sandboxed Python interpreter written in
+  // JavaScript, with the pyAgrum objects below standing in for the real library.
+  const Py = globalThis.MiniPy;
+  const { PyError, HostObject, Opaque, Builtin, NdArray, PyDict, Slice, tuple, isTuple, flatten, iterate, toNumber } = Py;
+  const fn = (name, f) => new Builtin(name, f);
 
-  function tokenize(src) {
-    const toks = [];
-    let i = 0, line = 1, depth = 0;
-    const push = (type, value) => toks.push({ type, value, line });
-    while (i < src.length) {
-      const ch = src[i];
-      if (ch === "\n") {
-        if (depth === 0 && toks.length && toks[toks.length - 1].type !== "nl") push("nl");
-        line++; i++; continue;
-      }
-      if (ch === " " || ch === "\t" || ch === "\r" || ch === "\f") { i++; continue; }
-      if (ch === "\\" && src[i + 1] === "\n") { i += 2; line++; continue; }
-      if (ch === "#") {
-        const end = src.indexOf("\n", i);
-        const text = src.slice(i, end < 0 ? src.length : end);
-        push("comment", text);
-        i = end < 0 ? src.length : end;
-        continue;
-      }
-      if (ch === ";") { if (depth === 0) push("nl"); i++; continue; }
-      const sm = /^([rRbBuUfF]{0,2})('''|"""|'|")/.exec(src.slice(i, i + 5));
-      if (sm && (sm[1] === "" || /^[A-Za-z]/.test(ch))) {
-        const prefix = sm[1].toLowerCase(), q = sm[2];
-        let j = i + sm[0].length, s = "";
-        const raw = prefix.includes("r");
-        for (;;) {
-          if (j >= src.length) throw new PyError(`Unterminated string on line ${line}`);
-          if (src.startsWith(q, j)) { j += q.length; break; }
-          const c = src[j];
-          if (c === "\n") { if (q.length === 1) throw new PyError(`Unterminated string on line ${line}`); line++; }
-          if (c === "\\" && !raw) {
-            const e = src[j + 1];
-            const simple = { n: "\n", t: "\t", r: "\r", "\\": "\\", "'": "'", '"': '"', "0": "\0", "\n": "" };
-            if (e in simple) { s += simple[e]; j += 2; if (e === "\n") line++; continue; }
-            if (e === "x") { s += String.fromCharCode(parseInt(src.substr(j + 2, 2), 16)); j += 4; continue; }
-            if (e === "u") { s += String.fromCharCode(parseInt(src.substr(j + 2, 4), 16)); j += 6; continue; }
-            if (e === "U") { s += String.fromCodePoint(parseInt(src.substr(j + 2, 8), 16)); j += 10; continue; }
-            s += c; j++; continue;
-          }
-          s += c; j++;
-        }
-        push("str", s);
-        i = j;
-        continue;
-      }
-      const nm = /^(?:\d[\d_]*\.?[\d_]*(?:[eE][+-]?\d+)?|\.\d[\d_]*(?:[eE][+-]?\d+)?)/.exec(src.slice(i, i + 64));
-      if (nm) { push("num", parseFloat(nm[0].replace(/_/g, ""))); i += nm[0].length; continue; }
-      const id = /^[A-Za-z_\u00c0-\uffff][\w\u00c0-\uffff]*/.exec(src.slice(i, i + 256));
-      if (id) { push("name", id[0]); i += id[0].length; continue; }
-      const op = /^(\*\*|\/\/|==|!=|<=|>=|->|:=|[-+*\/%()\[\]{},:.=<>@~&|^!])/.exec(src.slice(i, i + 2));
-      if (op) {
-        if ("([{".includes(op[0])) depth++;
-        if (")]}".includes(op[0])) depth = Math.max(0, depth - 1);
-        push("op", op[0]); i += op[0].length; continue;
-      }
-      throw new PyError(`Unexpected character ${JSON.stringify(ch)} on line ${line}`);
-    }
-    push("nl");
-    return toks;
-  }
+  // Other model kinds pyAgrum offers; the editor only handles Bayesian networks.
+  const OTHER_MODELS = {
+    InfluenceDiagram: "influence diagrams", fastID: "influence diagrams", MarkovRandomField: "Markov random fields",
+    fastMRF: "Markov random fields", MarkovNet: "Markov networks", fastMN: "Markov networks", CredalNet: "credal networks",
+    BNMixture: "BN mixtures", CLG: "CLG models", CTBN: "CTBNs",
+  };
 
-  // ---------------------------------------------------------------- parser
+  // options.pick: which network to import when the script builds several (an index into the
+  // returned `networks`); by default the largest.
+  function importPython(src, options = {}) {
+    const warnings = [];
+    let modelChanged = false, randomCpts = false;
+    let lineLabel = (l) => `Line ${l}`;
+    const nb = notebookCode(src);
+    if (nb) { src = nb.code; lineLabel = nb.label; }
+    // IPython magics and shell escapes (%matplotlib, !pip ...) are never valid Python
+    src = src.replace(/^[ \t]*[%!].*$/gm, "");
 
-  // Splits the token stream into statements; each is parsed on its own so one bad line does not
-  // stop the import.
-  function splitStatements(toks) {
-    const stmts = [];
-    let cur = [];
-    for (const t of toks) {
-      if (t.type === "comment") { stmts.push({ comment: t }); continue; }
-      if (t.type === "nl") { if (cur.length) stmts.push({ toks: cur }); cur = []; continue; }
-      cur.push(t);
-    }
-    return stmts;
-  }
+    const bns = [];
+    const numerical = new WeakSet(); // NumericalDiscreteVariable nodes, stored as labelized
+    const untouched = new Set(); // nodes whose CPT is still fastBN's random one
+    const otherModels = new Set();
+    // Aggregator and noisy-gate nodes (bn.addMAX, bn.addNoisyOR, ...). pyAgrum computes their CPT
+    // from the parents; the importer does the same once the script has run.
+    const generated = new WeakMap(); // node -> {kind, value, weights: Map(parent id -> weight)}
+    const warnOnce = new Set();
 
-  function parseStatement(toks) {
-    let p = 0;
-    const peek = () => toks[p];
-    const isOp = (v) => toks[p] && toks[p].type === "op" && toks[p].value === v;
-    const expect = (v) => {
-      if (!isOp(v)) throw new PyError(`Expected '${v}' on line ${(toks[p] || toks[p - 1]).line}`);
-      p++;
+    const varStr = (s) => {
+      const kind = { labelized: "Labelized", range: "Range", integer: "Integer", discretized: "Discretized" }[s.type];
+      if (s.type === "range") return `${s.name}:Range([${s.min},${s.max}])`;
+      return `${s.name}:${s.numerical ? "NumericalDiscrete" : kind}({${s.labels.join("|")}})`;
     };
 
-    function expr() {
-      let left = term();
-      while (isOp("+") || isOp("-")) { const op = toks[p++].value; left = { t: "bin", op, left, right: term() }; }
-      return left;
-    }
-    function term() {
-      let left = unary();
-      while (isOp("*") || isOp("/")) { const op = toks[p++].value; left = { t: "bin", op, left, right: unary() }; }
-      return left;
-    }
-    function unary() {
-      if (isOp("-")) { p++; return { t: "neg", e: unary() }; }
-      if (isOp("+")) { p++; return unary(); }
-      return postfix();
-    }
-    function postfix() {
-      let e = atom();
-      for (;;) {
-        if (isOp(".")) { p++; const n = toks[p++]; if (!n || n.type !== "name") throw new PyError("Expected attribute name"); e = { t: "attr", obj: e, name: n.value }; }
-        else if (isOp("(")) {
-          p++;
-          const args = [], kwargs = {};
-          while (!isOp(")")) {
-            if (peek().type === "name" && toks[p + 1] && toks[p + 1].type === "op" && toks[p + 1].value === "=") {
-              const k = toks[p].value; p += 2; kwargs[k] = expr();
-            } else args.push(expr());
-            if (!isOp(")")) expect(",");
-          }
-          p++;
-          e = { t: "call", fn: e, args, kwargs };
-        } else if (isOp("[")) {
-          p++;
-          const items = [];
-          let tuple = false;
-          while (!isOp("]")) {
-            items.push(sliceItem());
-            if (!isOp("]")) { expect(","); tuple = true; }
-          }
-          p++;
-          e = { t: "index", obj: e, key: tuple || items.length !== 1 ? { t: "tuple", items } : items[0] };
-        } else return e;
-      }
-    }
-    function sliceItem() {
-      if (isOp(":")) { p++; if (!isOp(",") && !isOp("]")) expr(); return { t: "slice" }; }
-      const e = expr();
-      if (isOp(":")) { p++; if (!isOp(",") && !isOp("]")) expr(); return { t: "slice", partial: true }; }
-      return e;
-    }
-    function seq(close) {
-      const items = [];
-      let comma = false;
-      while (!isOp(close)) {
-        items.push(expr());
-        if (!isOp(close)) { expect(","); comma = true; }
-      }
-      p++;
-      return { items, comma };
-    }
-    function atom() {
-      const t = toks[p++];
-      if (!t) throw new PyError("Unexpected end of statement");
-      if (t.type === "num") return { t: "lit", v: t.value };
-      if (t.type === "str") {
-        let s = t.value;
-        while (peek() && peek().type === "str") s += toks[p++].value;
-        return { t: "lit", v: s };
-      }
-      if (t.type === "name") {
-        if (t.value === "True") return { t: "lit", v: true };
-        if (t.value === "False") return { t: "lit", v: false };
-        if (t.value === "None") return { t: "lit", v: null };
-        return { t: "name", name: t.value, line: t.line };
-      }
-      if (t.type === "op" && t.value === "(") {
-        const { items, comma } = seq(")");
-        return comma || items.length !== 1 ? { t: "list", items } : items[0];
-      }
-      if (t.type === "op" && t.value === "[") {
-        if (toks.some((x) => x.type === "name" && x.value === "for")) throw new PyError("List comprehensions are not supported");
-        return { t: "list", items: seq("]").items };
-      }
-      if (t.type === "op" && t.value === "{") {
-        const entries = [];
-        while (!isOp("}")) {
-          const k = expr();
-          expect(":");
-          entries.push([k, expr()]);
-          if (!isOp("}")) expect(",");
+    // A variable not (yet) in a network: gum.LabelizedVariable(...) etc. Adding it copies it.
+    class VarHost extends HostObject {
+      constructor(spec) { super(); this.spec = spec; }
+      get typeName() { return "DiscreteVariable"; }
+      str() { return varStr(this.spec); }
+      getattr(name) {
+        const s = this.spec;
+        const relabel = () => { if (s.type !== "labelized") s.labels = M.labelsFor(s); };
+        switch (name) {
+          case "addLabel":
+            return fn(name, ([l]) => { if (s.type !== "labelized") throw new PyError(`${s.name} is not a LabelizedVariable`); s.labels.push(String(l)); return this; });
+          case "changeLabel":
+            return fn(name, ([i, l]) => { if (s.type !== "labelized") throw new PyError(`${s.name} is not a LabelizedVariable`); s.labels[toNumber(i)] = String(l); return null; });
+          case "addTick":
+            return fn(name, ([t]) => { s.ticks.push(toNumber(t)); s.ticks.sort((a, b) => a - b); relabel(); return this; });
+          case "addValue":
+            return fn(name, ([v]) => {
+              if (s.numerical) { s.labels.push(M.fmtNum(toNumber(v))); s.labels.sort((a, b) => a - b); }
+              else { s.values.push(toNumber(v)); s.values.sort((a, b) => a - b); relabel(); }
+              return this;
+            });
+          case "setDescription": return fn(name, ([d]) => { s.description = String(d); return null; });
+          case "setName": return fn(name, ([n]) => { s.name = String(n); return null; });
         }
-        p++;
-        return { t: "dict", entries };
+        return readVar(s, name);
       }
-      throw new PyError(`Unexpected '${t.value}' on line ${t.line}`);
     }
 
-    const first = expr();
-    let stmt;
-    if (isOp("=")) {
-      p++;
-      const targets = [first];
-      let value = expr();
-      while (isOp("=")) { p++; targets.push(value); value = expr(); }
-      stmt = { t: "assign", targets, value };
-    } else stmt = { t: "expr", e: first };
-    if (p < toks.length) throw new PyError(`Unsupported syntax near '${toks[p].value}' on line ${toks[p].line}`);
-    return stmt;
-  }
+    // bn.variable(...), bn["name"]: a read-only view of a variable in a network, like pyAgrum's.
+    class VarView extends HostObject {
+      constructor(bn, node) { super(); this.bn = bn; this.node = node; }
+      get typeName() { return "DiscreteVariable"; }
+      get spec() { return Object.assign({ numerical: numerical.has(this.node) }, this.node); }
+      str() { return varStr(this.spec); }
+      getattr(name) {
+        if (["addLabel", "changeLabel", "addTick", "addValue", "setName"].includes(name)) {
+          throw new PyError(`'DiscreteVariable' object has no attribute '${name}' (variables can't be changed once they are in a network; use bn.changeVariableLabel or bn.changeVariableName)`);
+        }
+        return readVar(this.node, name);
+      }
+    }
 
-  // ---------------------------------------------------------------- evaluator
+    function readVar(s, name) {
+      switch (name) {
+        case "name": return fn(name, () => s.name);
+        case "description": return fn(name, () => s.description);
+        case "labels": return fn(name, () => tuple(s.labels.slice()));
+        case "label": return fn(name, ([i]) => s.labels[toNumber(i)]);
+        case "domainSize": return fn(name, () => s.labels.length);
+        case "index": case "posLabel": return fn(name, ([l]) => { const i = s.labels.indexOf(String(l)); if (i < 0) throw new PyError(`${JSON.stringify(l)} is not a state of ${s.name}`); return i; });
+        case "numerical": return fn(name, ([i]) => numericValue(s, toNumber(i)));
+        case "isLabel": return fn(name, ([l]) => s.labels.includes(String(l)));
+        case "toStringWithDescription": return fn(name, () => varStr(s));
+        case "varType": return fn(name, () => s.type);
+        case "minVal": return fn(name, () => numericValue(s, 0));
+        case "maxVal": return fn(name, () => numericValue(s, s.labels.length - 1));
+        case "ticks": return fn(name, () => tuple((s.ticks || []).slice()));
+        case "integerDomain": case "numericalDomain": return fn(name, () => tuple(s.labels.map((_, i) => numericValue(s, i))));
+      }
+      throw new PyError(`'DiscreteVariable' object has no attribute '${name}'`);
+    }
 
-  const SKIP_KEYWORDS = new Set(["import", "from", "try", "except", "finally", "else", "pass", "print", "assert", "del", "raise", "return", "global", "nonlocal"]);
-  const BLOCK_KEYWORDS = new Set(["if", "elif", "for", "while", "def", "class", "with", "lambda"]);
+    // The number pyAgrum associates with a state (used by fillFromFunction).
+    function numericValue(s, i) {
+      switch (s.type) {
+        case "range": return s.min + i;
+        case "integer": return s.values[i];
+        case "discretized": return (s.ticks[i] + s.ticks[i + 1]) / 2;
+      }
+      return s.numerical || numerical.has(s) ? Number(s.labels[i]) : i;
+    }
 
-  function flatten(v, out = []) {
-    if (Array.isArray(v)) for (const x of v) flatten(x, out);
-    else out.push(v);
-    return out;
-  }
+    function varSpec(type, args, kwargs) {
+      const arg = (i, key, def) => (args[i] !== undefined ? args[i] : kwargs.has(key) ? kwargs.get(key) : def);
+      const name = arg(0, "aName");
+      if (typeof name !== "string") throw new PyError("Variable name must be a string");
+      const spec = { name, description: String(arg(1, "aDesc", "")), type };
+      if (type === "labelized") {
+        const l = arg(2, "nbrLabel", 2);
+        spec.labels = typeof l === "number" ? Array.from({ length: l }, (_, i) => String(i)) : iterate(l).map(String);
+      } else if (type === "range") {
+        spec.min = toNumber(arg(2, "minVal", 0)); spec.max = toNumber(arg(3, "maxVal", 1));
+        checkStates(spec.max - spec.min + 1, name);
+        spec.labels = M.labelsFor(spec);
+      } else if (type === "integer") {
+        spec.values = flatten(arg(2, "domain", [])).map(toNumber).sort((a, b) => a - b);
+        spec.labels = M.labelsFor(spec);
+      } else if (type === "numerical") {
+        spec.type = "labelized";
+        spec.numerical = true;
+        spec.labels = flatten(arg(2, "domain", [])).map(toNumber).sort((a, b) => a - b).map(M.fmtNum);
+      } else if (type === "discretized") {
+        spec.ticks = flatten(arg(2, "ticks", [])).map(toNumber).sort((a, b) => a - b);
+        spec.labels = M.labelsFor(spec);
+      }
+      return new VarHost(spec);
+    }
 
-  function importPython(src) {
-    const warnings = [];
-    let layout = null;
-    const bns = [];
-
-    const module = { kind: "module" };
-    const np = { kind: "np" };
-    const env = new Map([["gum", module], ["pyagrum", module], ["pyAgrum", module], ["np", np], ["numpy", np]]);
+    // fastBN / fastVariable node syntax: name, name[n], name[min,max], name[t1,t2,...],
+    // name[min:max:n], name{a|b|c} (labels, integers or numbers).
+    function fastSpec(txt, domainSize) {
+      const m = /^\s*([^[{]*?)\s*(\{[^}]*\}|\[[^\]]*\])?\s*$/.exec(txt);
+      if (!m || !m[1]) throw new PyError(`Cannot read the fastBN variable ${JSON.stringify(txt.trim())}`);
+      const name = m[1], dom = m[2];
+      let s = { name, description: name, type: "range", min: 0, max: domainSize - 1 };
+      if (dom && dom[0] === "{") {
+        const labels = dom.slice(1, -1).split("|").map((x) => x.trim());
+        const isNum = (l) => l !== "" && Number.isFinite(Number(l));
+        if (labels.every((l) => /^-?\d+$/.test(l))) s = { name, description: name, type: "integer", values: labels.map(Number).sort((a, b) => a - b) };
+        else if (labels.every(isNum)) s = { name, description: name, type: "labelized", numerical: true, labels: labels.map(Number).sort((a, b) => a - b).map(M.fmtNum) };
+        else s = { name, description: name, type: "labelized", labels };
+      } else if (dom) {
+        const body = dom.slice(1, -1);
+        if (body.includes(":")) {
+          const [a, b, n] = body.split(":").map((x) => Number(x.trim()));
+          checkStates(n, name);
+          s = { name, description: name, type: "discretized", ticks: Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n) };
+        } else {
+          const parts = body.split(",").map((x) => Number(x.trim()));
+          if (parts.some((x) => !Number.isFinite(x))) throw new PyError(`Cannot read the fastBN domain ${dom}`);
+          if (parts.length === 1) s.max = parts[0] - 1;
+          else if (parts.length === 2 && parts.every(Number.isInteger)) { s.min = parts[0]; s.max = parts[1]; }
+          else s = { name, description: name, type: "discretized", ticks: parts.sort((a, b) => a - b) };
+        }
+      }
+      checkStates(s.type === "range" ? s.max - s.min + 1 : s.type === "discretized" ? s.ticks.length - 1 : (s.labels || s.values).length, name);
+      s.labels = s.labels || M.labelsFor(s);
+      return s;
+    }
 
     function makeBN(name) {
-      const bn = { kind: "bn", net: M.createNetwork(name), pyIds: [] };
+      const bn = new BNHost(M.createNetwork(name), []);
       bns.push(bn);
       return bn;
     }
 
-    function nodeRef(bn, v) {
-      let node;
-      if (typeof v === "number") node = M.getNode(bn.net, bn.pyIds[v]);
-      else if (typeof v === "string") node = M.nodeByName(bn.net, v);
-      else if (v && v.kind === "var") node = M.nodeByName(bn.net, v.spec.name);
-      if (!node) throw new PyError(`Unknown variable ${JSON.stringify(v && v.spec ? v.spec.name : v)}`);
-      return node;
-    }
-
-    function addVar(bn, spec) {
-      if (M.nodeByName(bn.net, spec.name)) throw new PyError(`Variable ${JSON.stringify(spec.name)} already exists`);
-      if (!spec.labels || !spec.labels.length) throw new PyError(`Variable ${JSON.stringify(spec.name)} has no states`);
-      const node = M.addNode(bn.net, spec);
-      bn.pyIds.push(node.id);
-      return bn.pyIds.length - 1;
-    }
-
-    function varSpec(type, args) {
-      const [name, description = ""] = args;
-      if (typeof name !== "string") throw new PyError("Variable name must be a string");
-      const spec = { name, description: String(description), type };
-      if (type === "labelized") {
-        const l = args[2] === undefined ? 2 : args[2];
-        spec.labels = Array.isArray(l) ? l.map(String) : Array.from({ length: l }, (_, i) => String(i));
-      } else if (type === "range") {
-        spec.min = args[2] ?? 0; spec.max = args[3] ?? 1;
-        spec.labels = M.labelsFor(spec);
-      } else if (type === "integer") {
-        spec.values = (args[2] || []).map(Number).sort((a, b) => a - b);
-        spec.labels = M.labelsFor(spec);
-      } else if (type === "numerical") {
-        spec.type = "labelized";
-        spec.labels = (args[2] || []).map(Number).sort((a, b) => a - b).map(M.fmtNum);
-      } else if (type === "discretized") {
-        spec.ticks = (args[2] || []).map(Number).sort((a, b) => a - b);
-        spec.labels = M.labelsFor(spec);
+    class BNHost extends HostObject {
+      constructor(net, pyIds) { super(); this.net = net; this.pyIds = pyIds; }
+      get typeName() { return "BayesNet"; }
+      str() { return `BN{nodes: ${this.net.nodes.length}, arcs: ${this.net.arcs.length}}`; }
+      len() { return this.net.nodes.length; }
+      iter() { return this.liveIds(); }
+      liveIds() { return this.pyIds.map((x, i) => (x === null ? null : i)).filter((x) => x !== null); }
+      node(v) {
+        let node;
+        if (typeof v === "number") node = this.pyIds[v] != null ? M.getNode(this.net, this.pyIds[v]) : null;
+        else if (typeof v === "string") node = M.nodeByName(this.net, v);
+        else if (v instanceof VarHost || v instanceof VarView) node = M.nodeByName(this.net, v.spec.name);
+        if (!node) throw new PyError(`Unknown variable ${typeof v === "string" ? JSON.stringify(v) : Py.str(v)}`);
+        return node;
       }
-      return { kind: "var", spec };
-    }
-
-    function refreshLabels(spec) {
-      if (spec.type !== "labelized") spec.labels = M.labelsFor(spec);
-    }
-
-    // Assigns `value` to the CPT cells selected by `fixed` (a map from potential-variable position
-    // to state index). Cells are visited in aGrUM order, which is also numpy's C order.
-    function setCells(bn, node, fixed, value) {
-      const vars = [node.id].concat(M.parentsOf(bn.net, node.id));
-      const cards = vars.map((v) => M.card(bn.net, v));
-      const st = M.strides(cards);
-      const cells = [];
-      for (let o = 0; o < node.cpt.length; o++) {
-        if (vars.every((_, k) => !fixed.has(k) || Math.floor(o / st[k]) % cards[k] === fixed.get(k))) cells.push(o);
+      pyId(node) { return this.pyIds.indexOf(node.id); }
+      add(spec) {
+        if (M.nodeByName(this.net, spec.name)) throw new PyError(`A variable named ${JSON.stringify(spec.name)} already exists`);
+        if (!spec.labels.length) throw new PyError(`Variable ${JSON.stringify(spec.name)} has no states`);
+        if (spec.labels.length > 1e5) throw new PyError(`Variable ${JSON.stringify(spec.name)} has too many states (${spec.labels.length})`);
+        const node = M.addNode(this.net, spec);
+        node.cpt.fill(0); // like pyAgrum, CPT cells start at 0 until the script fills them
+        if (spec.numerical) numerical.add(node);
+        this.pyIds.push(node.id);
+        return this.pyIds.length - 1;
       }
-      const vals = flatten(value).map(Number);
-      if (!vals.length || cells.length % vals.length) throw new PyError(`Cannot assign ${vals.length} values to ${cells.length} CPT cells of ${node.name}`);
-      cells.forEach((o, i) => { node.cpt[o] = vals[i % vals.length]; });
-    }
-
-    function potentialKey(bn, node, key) {
-      const vars = [node.id].concat(M.parentsOf(bn.net, node.id));
-      const fixed = new Map();
-      if (key && key.kind === "dict") {
-        for (const [k, v] of key.map) {
-          const target = M.nodeByName(bn.net, k);
-          const pos = target ? vars.indexOf(target.id) : -1;
-          if (pos < 0) throw new PyError(`${JSON.stringify(k)} is not in the CPT of ${node.name}`);
-          const idx = typeof v === "number" ? v : target.labels.indexOf(String(v));
-          if (idx < 0 || idx >= target.labels.length) throw new PyError(`${JSON.stringify(v)} is not a state of ${k}`);
-          fixed.set(pos, idx);
-        }
-      } else if (key && key.kind === "slice") {
-        if (key.partial) throw new PyError("Partial slices are not supported");
-      } else {
-        // numpy-style indexing: axis 0 is the last variable of the potential
-        const items = Array.isArray(key) ? key : [key];
-        items.forEach((it, axis) => {
-          if (it && it.kind === "slice") { if (it.partial) throw new PyError("Partial slices are not supported"); return; }
-          if (typeof it !== "number") throw new PyError("Unsupported CPT index");
-          const pos = vars.length - 1 - axis;
-          fixed.set(pos, it < 0 ? M.card(bn.net, vars[pos]) + it : it);
-        });
+      arc(a, b) {
+        const child = this.node(b);
+        checkCptSize(this.net, child, this.node(a));
+        const empty = child.cpt.every((v) => v === 0);
+        const err = M.addArc(this.net, this.node(a).id, child.id);
+        if (err) throw new PyError(`${err} (${this.node(a).name} → ${child.name})`);
+        if (empty) child.cpt.fill(0);
       }
-      return fixed;
-    }
-
-    function callMethod(obj, name, args, kwargs) {
-      if (obj === module) {
+      getitem(k) { return new VarView(this, this.node(k)); }
+      contains(k) { try { this.node(k); return true; } catch { return false; } }
+      getattr(name) {
+        modelChanged = true;
+        const net = this.net;
+        const names = (ids) => ids.map((id) => M.getNode(net, id).name);
         switch (name) {
-          case "BayesNet": return makeBN(args[0] ?? kwargs.name ?? "BN");
-          case "LabelizedVariable": return varSpec("labelized", args);
-          case "RangeVariable": return varSpec("range", args);
-          case "IntegerVariable": return varSpec("integer", args);
-          case "NumericalDiscreteVariable": return varSpec("numerical", args);
-          case "DiscretizedVariable": return varSpec("discretized", args);
-          case "fastBN": return fastBN(args[0], args[1] ?? kwargs.domain_size ?? 2);
-        }
-      }
-      if (obj === np && (name === "array" || name === "asarray")) return args[0];
-      if (obj && obj.kind === "var") {
-        if (name === "addLabel") { obj.spec.labels.push(String(args[0])); return obj; }
-        if (name === "addTick") { obj.spec.ticks.push(Number(args[0])); obj.spec.ticks.sort((a, b) => a - b); refreshLabels(obj.spec); return obj; }
-        if (name === "addValue") { obj.spec.values.push(Number(args[0])); obj.spec.values.sort((a, b) => a - b); refreshLabels(obj.spec); return obj; }
-        if (name === "setDescription") { obj.spec.description = String(args[0]); return null; }
-        if (name === "name") return obj.spec.name;
-        if (name === "labels") return obj.spec.labels.slice();
-      }
-      if (obj && obj.kind === "bn") {
-        const net = obj.net;
-        switch (name) {
-          case "add":
-            if (args[0] && args[0].kind === "var") return addVar(obj, structuredClone(args[0].spec));
-            if (typeof args[0] === "string") {
-              const n = args[1] ?? 2;
-              return addVar(obj, { name: args[0], description: args[0], type: "range", min: 0, max: n - 1 });
+          case "add": return fn(name, ([v, n]) => {
+            if (v instanceof VarHost || v instanceof VarView) return this.add(structuredClone(v.spec));
+            if (typeof v === "string") {
+              const spec = { name: v, description: v, type: "range", min: 0, max: (n ?? 2) - 1 };
+              spec.labels = M.labelsFor(spec);
+              return this.add(spec);
             }
-            throw new PyError("Unsupported bn.add arguments");
-          case "addArc": case "addArcs": {
-            const pairs = name === "addArc" ? [args] : args[0];
-            for (const [a, b] of pairs) {
-              const err = M.addArc(net, nodeRef(obj, a).id, nodeRef(obj, b).id);
-              if (err) throw new PyError(err);
-            }
+            throw new PyError("bn.add() expects a variable or a name");
+          });
+          case "addVariables": return fn(name, ([specs, n = 2]) => tuple(iterate(specs).map((s) => this.add(fastSpec(s, n)))));
+          case "addArc": return fn(name, ([a, b]) => { this.arc(a, b); return null; });
+          case "addArcs": return fn(name, ([pairs]) => { for (const pr of iterate(pairs)) { const [a, b] = iterate(pr); this.arc(a, b); } return null; });
+          case "eraseArc": return fn(name, ([a, b]) => { M.removeArc(net, this.node(a).id, this.node(b).id); return null; });
+          case "reverseArc": return fn(name, ([a, b]) => { const err = M.reverseArc(net, this.node(a).id, this.node(b).id); if (err) throw new PyError(err); return null; });
+          case "erase": return fn(name, ([v]) => { const n = this.node(v); M.removeNode(net, n.id); this.pyIds[this.pyId(n)] = null; return null; });
+          case "cpt": return fn(name, ([v]) => new PotHost(this, this.node(v)));
+          case "idFromName": case "nodeId": return fn(name, ([v]) => this.pyId(this.node(v)));
+          case "variable": case "variableFromName": return fn(name, ([v]) => new VarView(this, this.node(v)));
+          case "names": return fn(name, () => new Py.PySet(net.nodes.map((n) => n.name)));
+          case "nodes": return fn(name, () => new Py.PySet(this.liveIds()));
+          case "arcs": return fn(name, () => new Py.PySet(net.arcs.map((a) => tuple([this.pyId(M.getNode(net, a.from)), this.pyId(M.getNode(net, a.to))]))));
+          case "parents": return fn(name, ([v]) => new Py.PySet(M.parentsOf(net, this.node(v).id).map((id) => this.pyIds.indexOf(id))));
+          case "children": return fn(name, ([v]) => new Py.PySet(M.childrenOf(net, this.node(v).id).map((id) => this.pyIds.indexOf(id))));
+          case "parentNames": case "parentsNames": return fn(name, ([v]) => names(M.parentsOf(net, this.node(v).id)));
+          case "childrenNames": return fn(name, ([v]) => names(M.childrenOf(net, this.node(v).id)));
+          case "size": return fn(name, () => net.nodes.length);
+          case "sizeArcs": return fn(name, () => net.arcs.length);
+          case "empty": return fn(name, () => !net.nodes.length);
+          case "exists": return fn(name, ([v]) => this.contains(v));
+          case "existsArc": return fn(name, ([a, b]) => M.hasArc(net, this.node(a).id, this.node(b).id));
+          case "topologicalOrder": return fn(name, () => topoOrder(net).map((id) => this.pyIds.indexOf(id)));
+          case "changeVariableName": return fn(name, ([v, n]) => {
+            const node = this.node(v);
+            if (M.nodeByName(net, String(n)) && node.name !== String(n)) throw new PyError(`A variable named ${JSON.stringify(n)} already exists`);
+            node.name = String(n);
             return null;
-          }
-          case "eraseArc": M.removeArc(net, nodeRef(obj, args[0]).id, nodeRef(obj, args[1]).id); return null;
-          case "reverseArc": { const err = M.reverseArc(net, nodeRef(obj, args[0]).id, nodeRef(obj, args[1]).id); if (err) throw new PyError(err); return null; }
-          case "erase": { const n = nodeRef(obj, args[0]); M.removeNode(net, n.id); obj.pyIds = obj.pyIds.map((x) => (x === n.id ? null : x)); return null; }
-          case "cpt": return { kind: "pot", bn: obj, node: nodeRef(obj, args[0]) };
-          case "idFromName": return obj.pyIds.indexOf(nodeRef(obj, args[0]).id);
-          case "variable": return { kind: "var", spec: structuredClone(nodeRef(obj, args[0])) };
-          case "setProperty": case "generateCPTs": case "generateCPT": return null;
+          });
+          case "changeVariableLabel": return fn(name, ([v, oldL, newL]) => {
+            const node = this.node(v);
+            if (node.type !== "labelized") throw new PyError(`${node.name} is not a LabelizedVariable`);
+            const i = node.labels.indexOf(String(oldL));
+            if (i < 0) throw new PyError(`${JSON.stringify(oldL)} is not a state of ${node.name}`);
+            node.labels[i] = String(newL);
+            return null;
+          });
+          case "setProperty": return fn(name, ([k, v]) => { if (k === "name") net.name = String(v); return null; });
+          case "property": return fn(name, ([k]) => (k === "name" ? net.name : ""));
+          case "setName": return fn(name, ([n]) => { net.name = String(n); return null; });
+          case "generateCPTs": return fn(name, () => { for (const n of net.nodes) { M.randomizeCpt(n); untouched.add(n); } return null; });
+          case "generateCPT": return fn(name, ([v]) => { const n = this.node(v); M.randomizeCpt(n); untouched.add(n); return null; });
+          case "beginTopologyTransformation": case "endTopologyTransformation": return fn(name, () => null);
+          case "addMAX": case "addMIN": case "addSUM": case "addAMPLITUDE": case "addMEDIAN": case "addOR": case "addAND":
+          case "addCOUNT": case "addEXISTS": case "addFORALL":
+          case "addNoisyOR": case "addNoisyORNet": case "addNoisyORCompound": case "addNoisyAND": case "addLogit":
+            return fn(name, ([v, value], kw) => {
+              if (!(v instanceof VarHost)) throw new PyError(`${name}() expects a variable`);
+              const kind = name.slice(3);
+              const binary = ["OR", "AND", "EXISTS", "FORALL", "NoisyOR", "NoisyORNet", "NoisyORCompound", "NoisyAND", "Logit"].includes(kind);
+              if (binary && v.spec.labels.length !== 2) throw new PyError(`${name}(): ${v.spec.name} must have exactly 2 states`);
+              const id = this.add(structuredClone(v.spec));
+              const param = value ?? kw.get("external_weight") ?? kw.get("value") ?? kw.get("externalWeight");
+              generated.set(M.getNode(net, this.pyIds[id]), { kind, value: param ?? (/^(COUNT|EXISTS|FORALL)$/.test(kind) ? 1 : 0), weights: new Map() });
+              return id;
+            });
+          case "addWeightedArc": return fn(name, ([a, b, w]) => {
+            const gen = generated.get(this.node(b));
+            if (!gen || !/^(Noisy|Logit)/.test(gen.kind)) throw new PyError(`addWeightedArc(): ${this.node(b).name} is not a noisy-OR, noisy-AND or logit node`);
+            this.arc(a, b);
+            gen.weights.set(this.node(a).id, toNumber(w));
+            return null;
+          });
+          case "saveBIF": case "saveDSL": case "saveNET": case "saveUAI": case "saveO3PRM": case "saveBIFXML": case "loadBIF": case "loadDSL":
+            return fn(name, () => null);
         }
+        return new Opaque(`bn.${name}`);
       }
-      if (obj && obj.kind === "pot") {
-        const node = obj.node;
+    }
+
+    function topoOrder(net) {
+      const seen = new Set(), out = [];
+      const visit = (id) => { if (seen.has(id)) return; seen.add(id); for (const p of M.parentsOf(net, id)) visit(p); out.push(id); };
+      net.nodes.forEach((n) => visit(n.id));
+      return out;
+    }
+
+    // bn.cpt(...): a CPT, indexed like pyAgrum's Tensor.
+    class PotHost extends HostObject {
+      constructor(bn, node) { super(); this.bn = bn; this.node = node; }
+      get typeName() { return "Tensor"; }
+      vars() { return [this.node.id].concat(M.parentsOf(this.bn.net, this.node.id)).map((id) => M.getNode(this.bn.net, id)); }
+      str() { return `<CPT of ${this.node.name}>`; }
+      len() { return this.vars().at(-1).labels.length; }
+      binop() { throw new PyError("Arithmetic on CPTs is not supported"); }
+      touched() { untouched.delete(this.node); }
+
+      // For each variable position, the selected state indices (null = all). Positions fixed by
+      // an integer or a dict key are listed in sel.drop: like numpy, they don't appear in reads.
+      select(key) {
+        const vars = this.vars();
+        const sel = vars.map(() => null);
+        sel.drop = new Set();
+        if (key instanceof PyDict) {
+          for (const [k, v] of key.entries()) {
+            const pos = vars.findIndex((n) => n.name === (k instanceof VarHost || k instanceof VarView ? k.spec.name : k));
+            if (pos < 0) throw new PyError(`${JSON.stringify(k)} is not in the CPT of ${this.node.name}`);
+            const n = vars[pos];
+            const idx = typeof v === "number" ? v : n.labels.indexOf(String(v));
+            if (!(idx >= 0 && idx < n.labels.length)) throw new PyError(`${JSON.stringify(v)} is not a state of ${n.name}`);
+            sel[pos] = [idx];
+            sel.drop.add(pos);
+          }
+          return sel;
+        }
+        // numpy-style: axis 0 is the last variable of the CPT
+        const items = isTuple(key) ? key : [key];
+        if (items.length > vars.length) throw new PyError(`Too many indices for the CPT of ${this.node.name}`);
+        items.forEach((it, axis) => {
+          const pos = vars.length - 1 - axis;
+          const c = vars[pos].labels.length;
+          if (it instanceof Slice) {
+            if (it.lo === null && it.hi === null && it.step === null) return;
+            const step = it.step === null ? 1 : it.step;
+            const norm = (x, d) => (x === null ? d : x < 0 ? Math.max(0, x + c) : Math.min(x, c));
+            const out = [];
+            for (let i = norm(it.lo, 0); i < norm(it.hi, c); i += step) out.push(i);
+            sel[pos] = out;
+          } else if (typeof it === "number") {
+            if (!Number.isInteger(it) || it >= c || it < -c) throw new PyError(`Index ${it} is out of range for ${vars[pos].name}`);
+            sel[pos] = [it < 0 ? c + it : it];
+            sel.drop.add(pos);
+          } else if (it === null) {
+            // np.newaxis: ignore
+          } else throw new PyError(`Unsupported CPT index ${Py.str(it)}`);
+        });
+        return sel;
+      }
+
+      // Offsets of the selected cells, in aGrUM order (the CPT variable varies fastest), and the
+      // shape of the selection in numpy order.
+      cells(sel) {
+        const vars = this.vars();
+        const cards = vars.map((n) => n.labels.length);
+        const st = M.strides(cards);
+        const lists = sel.map((s, k) => s || Array.from({ length: cards[k] }, (_, i) => i));
+        let offs = [0];
+        for (let k = vars.length - 1; k >= 0; k--) {
+          const next = [];
+          for (const o of offs) for (const i of lists[k]) next.push(o + i * st[k]);
+          offs = next;
+        }
+        const shape = [];
+        for (let k = vars.length - 1; k >= 0; k--) if (!sel.drop?.has(k)) shape.push(lists[k].length);
+        return { offs, shape };
+      }
+
+      assign(sel, value) {
+        const { offs } = this.cells(sel);
+        const vals = value instanceof PotHost ? value.node.cpt.slice() : flatten(value instanceof NdArray ? value.data : value);
+        if (vals.some((v) => !(typeof v === "number" || typeof v === "boolean"))) throw new PyError(`CPT values must be numbers (got ${Py.typeName(vals.find((v) => typeof v !== "number"))})`);
+        if (!vals.length || offs.length % vals.length) throw new PyError(`Cannot put ${vals.length} values into ${offs.length} cells of the CPT of ${this.node.name}`);
+        offs.forEach((o, i) => { this.node.cpt[o] = +vals[i % vals.length]; });
+        this.touched();
+      }
+
+      read(sel) {
+        const { offs, shape } = this.cells(sel);
+        const vals = offs.map((o) => this.node.cpt[o]);
+        if (!shape.length) return vals[0];
+        const build = (off, dims) => {
+          if (!dims.length) return vals[off];
+          const [n, ...rest] = dims;
+          const size = rest.reduce((a, b) => a * b, 1);
+          return Array.from({ length: n }, (_, i) => build(off + i * size, rest));
+        };
+        // offs are in aGrUM order (last numpy axis fastest), which is numpy C order
+        return new NdArray(build(0, shape));
+      }
+
+      getitem(key) { return this.read(this.select(key)); }
+      setitem(key, value) { modelChanged = true; this.assign(this.select(key), value); }
+
+      fillFrom(other) {
+        const mine = this.vars(), theirs = other.vars();
+        const same = mine.length === theirs.length && mine.every((n) => theirs.some((t) => t.name === n.name && t.labels.length === n.labels.length));
+        if (!same) {
+          if (other.node.cpt.length !== this.node.cpt.length) throw new PyError(`The CPTs of ${this.node.name} and ${other.node.name} have different variables`);
+          this.node.cpt = other.node.cpt.slice();
+          return;
+        }
+        // match variables by name, as pyAgrum does
+        const pos = mine.map((n) => theirs.findIndex((t) => t.name === n.name));
+        const cards = mine.map((n) => n.labels.length);
+        const stTheirs = M.strides(theirs.map((n) => n.labels.length));
+        const out = new Array(this.node.cpt.length);
+        for (let o = 0; o < out.length; o++) {
+          let rem = o, src = 0;
+          for (let k = 0; k < cards.length; k++) { const i = rem % cards[k]; rem = Math.floor(rem / cards[k]); src += i * stTheirs[pos[k]]; }
+          out[o] = other.node.cpt[src];
+        }
+        this.node.cpt = out;
+      }
+
+      fillFromFunction(formula) {
+        if (typeof formula !== "string") throw new PyError("fillFromFunction() needs a formula string");
+        const f = Py.compileFormula(formula);
+        const vars = this.vars(), node = this.node;
+        const parents = vars.slice(1);
+        const c = node.labels.length;
+        const childVals = node.labels.map((_, i) => numericValue(node, i));
+        const env = new Map();
+        const cards = parents.map((n) => n.labels.length);
+        const rows = cards.reduce((a, b) => a * b, 1);
+        const cpt = new Array(c * rows).fill(0);
+        for (let r = 0; r < rows; r++) {
+          let rem = r;
+          parents.forEach((p, k) => { const i = rem % cards[k]; rem = Math.floor(rem / cards[k]); env.set(p.name, numericValue(p, i)); });
+          const v = toNumber(f(env));
+          let best = 0;
+          for (let s = 1; s < c; s++) if (Math.abs(childVals[s] - v) < Math.abs(childVals[best] - v)) best = s;
+          cpt[r * c + best] = 1;
+        }
+        node.cpt = cpt;
+      }
+
+      getattr(name) {
+        modelChanged = true;
+        const node = this.node;
         switch (name) {
-          case "fillWith": {
-            if (typeof args[0] === "number") node.cpt.fill(args[0]);
-            else setCells(obj.bn, node, new Map(), args[0] && args[0].kind === "pot" ? args[0].node.cpt : args[0]);
-            return obj;
-          }
-          case "normalizeAsCPT": M.normalizeCpt(node); return obj;
-          case "normalize": { const s = node.cpt.reduce((a, b) => a + b, 0); if (s > 0) node.cpt = node.cpt.map((v) => v / s); return obj; }
-          case "fillFromDistribution": return obj;
+          case "fillWith": return fn(name, ([v]) => {
+            if (typeof v === "number") node.cpt.fill(v);
+            else if (v instanceof PotHost) this.fillFrom(v);
+            else if (v instanceof Opaque) throw new PyError(`Filling the CPT of ${node.name} from ${v.name} (an inference result or tensor) is not supported`);
+            else this.assign(this.vars().map(() => null), v);
+            this.touched();
+            return this;
+          });
+          case "fillFromFunction": return fn(name, ([formula]) => { this.fillFromFunction(formula); this.touched(); return this; });
+          case "normalizeAsCPT": return fn(name, () => { M.normalizeCpt(node); return this; });
+          case "normalize": return fn(name, () => { const s = node.cpt.reduce((a, b) => a + b, 0); if (s > 0) node.cpt = node.cpt.map((v) => v / s); return this; });
+          case "translate": return fn(name, ([x]) => { node.cpt = node.cpt.map((v) => v + toNumber(x)); return this; });
+          case "scale": return fn(name, ([x]) => { node.cpt = node.cpt.map((v) => v * toNumber(x)); return this; });
+          case "abs": return fn(name, () => { node.cpt = node.cpt.map(Math.abs); return this; });
+          case "sq": return fn(name, () => { node.cpt = node.cpt.map((v) => v * v); return this; });
+          case "random": case "randomCPT": case "randomDistribution": return fn(name, () => { M.randomizeCpt(node); this.touched(); return this; });
+          case "uniformCPT": return fn(name, () => { M.uniformizeCpt(node); this.touched(); return this; });
+          case "noising": return fn(name, ([alpha]) => {
+            const a = toNumber(alpha);
+            node.cpt = node.cpt.map((v) => (1 - a) * v + a * Math.random());
+            M.normalizeCpt(node);
+            return this;
+          });
+          case "names": case "var_names": return tuple(this.vars().map((n) => n.name));
+          case "variable": return fn(name, ([i]) => new VarView(this.bn, typeof i === "number" ? this.vars()[i] : this.bn.node(i)));
+          case "variablesSequence": return fn(name, () => this.vars().map((n) => new VarView(this.bn, n)));
+          case "nbrDim": return fn(name, () => this.vars().length);
+          case "domainSize": return fn(name, () => node.cpt.length);
+          case "tolist": return fn(name, () => { const r = this.read(this.vars().map(() => null)); return r instanceof NdArray ? structuredClone(r.data) : r; });
+          case "toarray": return fn(name, () => this.read(this.vars().map(() => null)));
+          case "sum": return fn(name, () => node.cpt.reduce((a, b) => a + b, 0));
+          case "max": return fn(name, () => Math.max(...node.cpt));
+          case "min": return fn(name, () => Math.min(...node.cpt));
+          case "isNonZeroMap": case "putFirst": case "extract": case "margSumOut": case "margSumIn": case "sumOut": case "sumIn": case "reorganize":
+            return fn(name, () => new Opaque(`Tensor.${name}()`));
         }
+        throw new PyError(`'Tensor' object has no attribute '${name}' (not supported here)`);
       }
-      throw new PyError(`Unsupported call .${name}()`);
     }
 
     function fastBN(spec, domainSize) {
       const bn = makeBN("BN");
       const net = bn.net;
       const getVar = (txt) => {
-        const m = /^\s*([^\s{}\[\]<>;-]+)\s*(\{[^}]*\}|\[[^\]]*\])?\s*$/.exec(txt);
-        if (!m) throw new PyError(`Cannot parse fastBN node ${JSON.stringify(txt)}`);
-        const name = m[1];
-        const existing = M.nodeByName(net, name);
+        const s = fastSpec(txt, domainSize);
+        const existing = M.nodeByName(net, s.name);
         if (existing) return existing;
-        let s = { name, description: name, type: "range", min: 0, max: domainSize - 1 };
-        const dom = m[2];
-        if (dom && dom[0] === "{") {
-          const labels = dom.slice(1, -1).split("|").map((x) => x.trim());
-          const nums = labels.map(Number);
-          if (labels.every((l) => l !== "" && /^-?\d+$/.test(l))) s = { name, description: name, type: "integer", values: nums };
-          else s = { name, description: name, type: "labelized", labels };
-        } else if (dom) {
-          const parts = dom.slice(1, -1).split(",").map((x) => Number(x.trim()));
-          if (parts.length === 1) s.max = parts[0] - 1;
-          else if (parts.length === 2) { s.min = Math.trunc(parts[0]); s.max = Math.trunc(parts[1]); }
-          else s = { name, description: name, type: "discretized", ticks: parts };
-        }
-        s.labels = s.labels || M.labelsFor(s);
-        addVar(bn, s);
-        return M.nodeByName(net, name);
+        bn.add(s);
+        return M.nodeByName(net, s.name);
       };
       for (const chain of String(spec).split(/[;\n]/)) {
         if (!chain.trim()) continue;
-        const parts = chain.split(/(->|<-)/);
+        const parts = chain.split(/(->|<-|--)/);
         let prev = getVar(parts[0]);
         for (let i = 1; i < parts.length; i += 2) {
           const next = getVar(parts[i + 1]);
+          if (parts[i] === "--") throw new PyError("Undirected edges (--) are not allowed in a BayesNet");
           const [a, b] = parts[i] === "->" ? [prev, next] : [next, prev];
           if (!M.hasArc(net, a.id, b.id)) {
+            checkCptSize(net, b, a);
             const err = M.addArc(net, a.id, b.id);
-            if (err) throw new PyError(err);
+            if (err) throw new PyError(`${err} (${a.name} → ${b.name})`);
           }
           prev = next;
         }
       }
-      for (const n of net.nodes) M.randomizeCpt(n);
+      for (const n of net.nodes) { M.randomizeCpt(n); untouched.add(n); }
       return bn;
     }
 
-    function evaluate(e) {
-      switch (e.t) {
-        case "lit": return e.v;
-        case "name":
-          if (!env.has(e.name)) throw new PyError(`Unknown name '${e.name}'`);
-          return env.get(e.name);
-        case "neg": return -evaluate(e.e);
-        case "bin": {
-          const a = evaluate(e.left), b = evaluate(e.right);
-          if (e.op === "+") return Array.isArray(a) ? a.concat(b) : a + b;
-          if (e.op === "-") return a - b;
-          if (e.op === "*") return Array.isArray(a) ? Array.from({ length: a.length * b }, (_, i) => a[i % a.length]) : a * b;
-          return a / b;
+    const gumAttrs = new Map([
+      ["BayesNet", fn("BayesNet", ([a], kw) => {
+        if (a instanceof BNHost) {
+          const copy = makeBN(a.net.name);
+          copy.net = structuredClone(a.net);
+          copy.pyIds = a.pyIds.slice();
+          copy.net.nodes.forEach((n, i) => {
+            const orig = a.net.nodes[i];
+            if (numerical.has(orig)) numerical.add(n);
+            if (untouched.has(orig)) untouched.add(n);
+            if (generated.has(orig)) {
+              const g = generated.get(orig);
+              generated.set(n, Object.assign({}, g, { weights: new Map(g.weights) }));
+            }
+          });
+          return copy;
         }
-        case "list": return e.items.map(evaluate);
-        case "dict": return { kind: "dict", map: new Map(e.entries.map(([k, v]) => [evaluate(k), evaluate(v)])) };
-        case "slice": return { kind: "slice", partial: e.partial };
-        case "tuple": return e.items.map(evaluate);
-        case "attr": return { kind: "bound", obj: evaluate(e.obj), name: e.name };
-        case "call": {
-          const args = e.args.map(evaluate);
-          const kwargs = Object.fromEntries(Object.entries(e.kwargs).map(([k, v]) => [k, evaluate(v)]));
-          if (e.fn.t === "attr") return callMethod(evaluate(e.fn.obj), e.fn.name, args, kwargs);
-          if (e.fn.t === "name" && env.get(e.fn.name) && env.get(e.fn.name).kind === "fromimport") {
-            return callMethod(module, env.get(e.fn.name).name, args, kwargs);
-          }
-          if (e.fn.t === "name" && (e.fn.name === "list" || e.fn.name === "tuple")) return Array.from(args[0]);
-          if (e.fn.t === "name" && e.fn.name === "range") {
-            const [a, b] = args.length > 1 ? args : [0, args[0]];
-            return Array.from({ length: Math.max(0, b - a) }, (_, i) => a + i);
-          }
-          throw new PyError("Unsupported function call");
-        }
-        case "index": {
-          const obj = evaluate(e.obj), key = evaluate(e.key);
-          if (Array.isArray(obj) && typeof key === "number") return obj[key < 0 ? obj.length + key : key];
-          if (obj && obj.kind === "dict") return obj.map.get(key);
-          throw new PyError("Reading CPT entries is not supported");
-        }
-      }
-      throw new PyError("Unsupported expression");
+        return makeBN(a ?? kw.get("name") ?? "BN");
+      })],
+      ["LabelizedVariable", fn("LabelizedVariable", (a, kw) => varSpec("labelized", a, kw))],
+      ["RangeVariable", fn("RangeVariable", (a, kw) => varSpec("range", a, kw))],
+      ["IntegerVariable", fn("IntegerVariable", (a, kw) => varSpec("integer", a, kw))],
+      ["NumericalDiscreteVariable", fn("NumericalDiscreteVariable", (a, kw) => varSpec("numerical", a, kw))],
+      ["DiscretizedVariable", fn("DiscretizedVariable", (a, kw) => varSpec("discretized", a, kw))],
+      ["fastBN", fn("fastBN", ([s, n], kw) => fastBN(s, n ?? kw.get("domain_size") ?? kw.get("domainSize") ?? 2))],
+      ["fastVariable", fn("fastVariable", ([s, n], kw) => new VarHost(fastSpec(String(s), n ?? kw.get("domain_size") ?? 2)))],
+      ["loadBN", fn("loadBN", ([f]) => { throw new PyError(`loadBN(${Py.repr(f)}): reading network files isn't possible here; build the network in code instead`); })],
+    ]);
+    for (const [k, what] of Object.entries(OTHER_MODELS)) {
+      gumAttrs.set(k, fn(k, () => { otherModels.add(what); return new Opaque(k); }));
     }
 
-    function assign(target, value) {
-      if (target.t === "name") { env.set(target.name, value); return; }
-      if (target.t === "list") {
-        if (!Array.isArray(value) || value.length !== target.items.length) throw new PyError("Cannot unpack value");
-        target.items.forEach((t, i) => assign(t, value[i]));
-        return;
-      }
-      if (target.t === "index") {
-        const obj = evaluate(target.obj);
-        if (obj && obj.kind === "pot") {
-          setCells(obj.bn, obj.node, potentialKey(obj.bn, obj.node, evaluate(target.key)), value);
-          return;
-        }
-      }
-      throw new PyError("Unsupported assignment target");
+    class GumModule extends HostObject {
+      get typeName() { return "module"; }
+      getattr(name) { return gumAttrs.has(name) ? gumAttrs.get(name) : new Opaque(`gum.${name}`); }
+      exports() { return gumAttrs; }
+      str() { return "<module 'pyagrum'>"; }
+    }
+    const gum = new GumModule();
+
+    function resolveModule(name) {
+      if (/^py[aA]grum\.lib(\.|$)/.test(name)) return undefined; // notebook helpers, plotting
+      if (/^py[aA]grum(\.|$)/.test(name)) return gum; // pyagrum, pyagrum.causal_model, ...
+      return undefined;
     }
 
-    let tokens;
+    let result;
     try {
-      tokens = tokenize(src);
+      result = Py.runScript(src, {
+        resolveModule,
+        // random values only matter when they reach the network, e.g. random CPT entries
+        afterStatement: ({ usedRandom }) => { if (usedRandom && modelChanged) randomCpts = true; modelChanged = false; },
+        onStatementError: (msg, line) => warnings.push(line ? `${lineLabel(line)}: ${msg.replace(/ on line \d+$/, "")}` : msg),
+      });
     } catch (err) {
+      if (!(err instanceof PyError)) throw err;
       return { net: null, warnings: [err.message], layout: null };
     }
-    for (const st of splitStatements(tokens)) {
-      if (st.comment) {
-        const text = st.comment.value;
-        if (text.startsWith(LAYOUT_TAG)) {
-          try { layout = JSON.parse(text.slice(LAYOUT_TAG.length)); } catch { warnings.push(`Line ${st.comment.line}: could not read layout comment`); }
-        }
-        continue;
-      }
-      const head = st.toks[0];
-      if (head.type === "name" && head.value === "import") {
-        // import pyagrum as gum / import pyAgrum as gum
-        for (let k = 1; k < st.toks.length; k++) {
-          const t = st.toks[k];
-          if (t.type === "name" && /^py[aA]grum$|^numpy$/.test(t.value)) {
-            const alias = st.toks[k + 1] && st.toks[k + 1].value === "as" ? st.toks[k + 2].value : t.value;
-            env.set(alias, t.value === "numpy" ? np : module);
-          }
-        }
-        continue;
-      }
-      if (head.type === "name" && head.value === "from") {
-        const imp = st.toks.findIndex((t) => t.type === "name" && t.value === "import");
-        if (imp > 0 && /^py[aA]grum$/.test(st.toks[1].value)) {
-          for (let k = imp + 1; k < st.toks.length; k++) {
-            const t = st.toks[k];
-            if (t.type !== "name") continue;
-            if (st.toks[k + 1] && st.toks[k + 1].value === "as") { env.set(st.toks[k + 2].value, { kind: "fromimport", name: t.value }); k += 2; }
-            else env.set(t.value, { kind: "fromimport", name: t.value });
-          }
-        }
-        continue;
-      }
-      if (head.type === "name" && SKIP_KEYWORDS.has(head.value)) continue;
-      if (head.type === "name" && BLOCK_KEYWORDS.has(head.value)) {
-        warnings.push(`Line ${head.line}: '${head.value}' blocks are not supported; the header was skipped and the body lines were read as plain statements`);
-        continue;
-      }
-      try {
-        const stmt = parseStatement(st.toks);
-        if (stmt.t === "assign") {
-          const value = evaluate(stmt.value);
-          for (const t of stmt.targets) assign(t, value);
-        } else evaluate(stmt.e);
-      } catch (err) {
-        if (!(err instanceof PyError)) throw err;
-        warnings.push(`Line ${head.line}: ${err.message} (skipped)`);
+
+    // From here on, `warnings` collects summary notes; per-line problems go after them and are capped.
+    const lineWarnings = warnings.splice(0);
+    const converted = [];
+    for (const b of bns) {
+      for (const n of b.net.nodes) {
+        const gen = generated.get(n);
+        if (!gen) continue;
+        try { n.cpt = generatedCpt(b.net, n, gen, numericValue); converted.push(`${n.name} (${gen.kind})`); }
+        catch (err) { if (!(err instanceof PyError)) throw err; lineWarnings.push(`${n.name}: ${err.message}`); }
       }
     }
 
-    if (!bns.length) {
-      warnings.push("No BayesNet was found (expected gum.BayesNet(...) or gum.fastBN(...))");
-      return { net: null, warnings, layout };
+    let layout = null;
+    for (const c of result.comments) {
+      if (!c.text.startsWith(LAYOUT_TAG)) continue;
+      try { layout = JSON.parse(c.text.slice(LAYOUT_TAG.length)); } catch { lineWarnings.push(`${lineLabel(c.line)}: could not read the layout comment`); }
     }
-    const bn = bns.reduce((a, b) => (b.net.nodes.length > a.net.nodes.length ? b : a));
-    if (bns.length > 1) warnings.push(`Found ${bns.length} networks; imported the largest one`);
+
+    for (const what of otherModels) warnings.unshift(`This script builds ${what}, which the editor doesn't support (only Bayesian networks)`);
+    if (!bns.length) {
+      const builds = (f) => /"name":"(BayesNet|fastBN)"/.test(JSON.stringify(f.body));
+      const funcs = [...result.globals].filter(([, v]) => v instanceof Py.PyFunction).sort(([, a], [, b]) => builds(b) - builds(a)).map(([k]) => k + "()");
+      warnings.push("No Bayesian network was found (expected gum.BayesNet(...) or gum.fastBN(...))" +
+        (funcs.length ? `. The script only defines functions (${funcs.slice(0, 5).join(", ")}${funcs.length > 5 ? ", …" : ""}); add a line that calls the one that builds the network, e.g. bn = ${funcs[0].replace("()", "(...)")}` : ""));
+      return { net: null, warnings: warnings.concat(capWarnings(lineWarnings)), layout, networks: [], picked: -1 };
+    }
+    const nonEmpty = bns.filter((b) => b.net.nodes.length);
+    const candidates = nonEmpty.length ? nonEmpty : bns;
+    const varName = (b) => [...result.globals].find(([, v]) => v === b)?.[0];
+    const networks = candidates.map((b) => ({ label: varName(b) || b.net.name, nodes: b.net.nodes.length, arcs: b.net.arcs.length }));
+    networks.forEach((n, i) => { if (networks.some((m, j) => j < i && m.label === n.label)) n.label += ` (${networks.slice(0, i + 1).filter((m) => m.label === n.label).length})`; });
+    let picked = candidates.reduce((best, b, i) => (b.net.nodes.length >= candidates[best].net.nodes.length ? i : best), 0);
+    if (Number.isInteger(options.pick) && candidates[options.pick]) picked = options.pick;
+    const bn = candidates[picked];
     const net = bn.net;
+    const random = net.nodes.filter((n) => untouched.has(n));
+    if (random.length) warnings.push(`${random.length === net.nodes.length ? "All CPTs were" : `The CPT${random.length > 1 ? "s" : ""} of ${nameList(random.map((n) => n.name))} ${random.length > 1 ? "were" : "was"}`} left random by fastBN, so ${random.length > 1 ? "they" : "it"} won't match pyAgrum's random values`);
+    const kept = converted.filter((c) => net.nodes.some((n) => c.startsWith(n.name + " (")));
+    if (kept.length) warnings.push(`Aggregator and noisy-gate nodes became plain CPTs: ${nameList(kept)}`);
+    if (randomCpts) warnings.push("The script builds the network with random numbers, so the values differ from a run in Python");
+    const unfilled = net.nodes.filter((n) => n.cpt.every((v) => v === 0));
+    for (const n of unfilled) M.uniformizeCpt(n);
+    if (unfilled.length) warnings.push(`The CPT${unfilled.length > 1 ? "s" : ""} of ${nameList(unfilled.map((n) => n.name))} ${unfilled.length > 1 ? "were" : "was"} never filled, so ${unfilled.length > 1 ? "they were" : "it was"} set to uniform`);
     for (const n of net.nodes) {
-      if (M.badRows(n).length) warnings.push(`CPT of ${n.name} has rows that do not sum to 1`);
+      const bad = M.badRows(n).length;
+      if (bad) warnings.push(`CPT of ${n.name}: ${bad} of ${n.cpt.length / n.labels.length} rows do not sum to 1`);
     }
     if (layout && net.nodes.every((n) => Array.isArray(layout[n.name]))) {
       for (const n of net.nodes) [n.x, n.y] = layout[n.name];
     } else M.autoLayout(net);
-    return { net, warnings, layout };
+    return { net, warnings: warnings.concat(capWarnings(lineWarnings)), layout, networks, picked };
   }
 
-  globalThis.BNPyAgrum = { exportPython, importPython, tokenize };
+  function nameList(names, max = 8) {
+    return names.length <= max ? names.join(", ") : `${names.slice(0, max).join(", ")} and ${names.length - max} more`;
+  }
+
+  // Keeps the warning list readable when a script has many unsupported lines.
+  function capWarnings(warnings, max = 20) {
+    if (warnings.length <= max) return warnings;
+    return warnings.slice(0, max - 1).concat([`…and ${warnings.length - max + 1} more`]);
+  }
+
+  function checkStates(n, name) {
+    if (!(n <= 1e5)) throw new PyError(`Variable ${JSON.stringify(name)} has too many states (${n})`);
+  }
+
+  // Refuses an arc that would make the child's CPT unreasonably large for the editor.
+  function checkCptSize(net, child, parent) {
+    const size = M.parentsOf(net, child.id).reduce((acc, id) => acc * M.card(net, id), child.labels.length * parent.labels.length);
+    if (size > 5e6) throw new PyError(`The CPT of ${child.name} would have ${size.toLocaleString("en")} cells, which is too large`);
+  }
+
+  // The CPT of an aggregator or noisy-gate node, following pyAgrum's definitions. Aggregators work
+  // on the parents' values and pick the child state whose value is nearest (clamped to the domain).
+  function generatedCpt(net, node, gen, numericValue) {
+    const parents = M.parentsOf(net, node.id).map((id) => M.getNode(net, id));
+    const c = node.labels.length;
+    const num = numericValue;
+    const childVals = node.labels.map((_, i) => num(node, i));
+    const nearest = (v) => { let best = 0; for (let s = 1; s < c; s++) if (Math.abs(childVals[s] - v) < Math.abs(childVals[best] - v)) best = s; return best; };
+    const cards = parents.map((p) => p.labels.length);
+    const rows = cards.reduce((a, b) => a * b, 1);
+    if (rows * c > 5e6) throw new PyError("its CPT would be too large");
+    const cpt = new Array(rows * c).fill(0);
+    const val = gen.value;
+    for (let r = 0; r < rows; r++) {
+      let rem = r;
+      const idx = cards.map((k) => { const i = rem % k; rem = Math.floor(rem / k); return i; });
+      const vals = parents.map((p, k) => num(p, idx[k]));
+      let p1 = null, state = null;
+      switch (gen.kind) {
+        case "MAX": state = nearest(vals.length ? Math.max(...vals) : 0); break;
+        case "MIN": state = nearest(vals.length ? Math.min(...vals) : 0); break;
+        case "SUM": state = nearest(vals.reduce((a, b) => a + b, 0)); break;
+        case "AMPLITUDE": state = nearest(vals.length ? Math.max(...vals) - Math.min(...vals) : 0); break;
+        case "MEDIAN": {
+          const sv = vals.slice().sort((a, b) => a - b), m = sv.length >> 1;
+          state = nearest(!sv.length ? 0 : sv.length % 2 ? sv[m] : (sv[m - 1] + sv[m]) / 2);
+          break;
+        }
+        case "COUNT": state = nearest(vals.filter((v) => v === val).length); break;
+        case "OR": state = vals.some((v) => v === 1) ? 1 : 0; break;
+        case "AND": state = vals.length && vals.every((v) => v === 1) ? 1 : 0; break;
+        case "EXISTS": state = vals.some((v) => v === val) ? 1 : 0; break;
+        case "FORALL": state = vals.length && vals.every((v) => v === val) ? 1 : 0; break;
+        case "NoisyOR": case "NoisyORCompound": case "NoisyORNet": {
+          const leak = val;
+          let p0 = 1 - leak;
+          parents.forEach((p, k) => {
+            if (idx[k] === 0) return;
+            const w = gen.weights.has(p.id) ? gen.weights.get(p.id) : 1;
+            if (gen.kind === "NoisyORNet") p0 *= 1 - w;
+            else {
+              if (w < leak) throw new PyError(`a causal weight (${w}) cannot be lower than the leak (${leak})`);
+              p0 *= (1 - w) / (1 - leak);
+            }
+          });
+          p1 = 1 - p0;
+          break;
+        }
+        case "NoisyAND": {
+          p1 = val;
+          parents.forEach((p, k) => { const w = gen.weights.has(p.id) ? gen.weights.get(p.id) : 1; p1 *= idx[k] !== 0 ? w : 1 - w; });
+          break;
+        }
+        case "Logit": {
+          let z = val;
+          parents.forEach((p, k) => { z += (gen.weights.has(p.id) ? gen.weights.get(p.id) : 0) * vals[k]; });
+          p1 = 1 / (1 + Math.exp(-z));
+          break;
+        }
+      }
+      if (p1 !== null) { cpt[r * c] = 1 - p1; cpt[r * c + 1] = p1; }
+      else cpt[r * c + state] = 1;
+    }
+    return cpt;
+  }
+
+  // Jupyter notebooks: returns their code cells as one script (shell and magic lines dropped) and
+  // a function that turns a script line into "Cell N, line M".
+  function notebookCode(src) {
+    if (!/^\s*\{/.test(src)) return null;
+    let nb;
+    try { nb = JSON.parse(src); } catch { return null; }
+    if (!nb || !Array.isArray(nb.cells)) return null;
+    const lines = [], where = [];
+    let cellNo = 0;
+    for (const cell of nb.cells) {
+      if (cell.cell_type !== "code") continue;
+      cellNo++;
+      const text = Array.isArray(cell.source) ? cell.source.join("") : String(cell.source || "");
+      text.split("\n").forEach((l, i) => {
+        lines.push(/^\s*[%!]/.test(l) ? "" : l);
+        where.push([cellNo, i + 1]);
+      });
+      lines.push("");
+      where.push([cellNo, 0]);
+    }
+    return { code: lines.join("\n"), label: (l) => (where[l - 1] ? `Cell ${where[l - 1][0]}, line ${where[l - 1][1]}` : `Line ${l}`) };
+  }
+
+  globalThis.BNPyAgrum = { exportPython, importPython };
 })();

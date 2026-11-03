@@ -72,11 +72,12 @@
   <dialog id="import-dialog">
     <form method="dialog">
       <h2>Import pyAgrum code</h2>
-      <p class="muted">Paste Python that builds a <code>gum.BayesNet</code> or calls <code>gum.fastBN</code>. Loops and other control flow are skipped. You can also open a PNG or SVG exported from this editor.</p>
+      <p class="muted">Paste Python that builds a <code>gum.BayesNet</code> or calls <code>gum.fastBN</code>, or open a <code>.py</code> file, a Jupyter notebook, or a PNG or SVG exported from this editor. The code runs in a sandboxed Python interpreter inside this page; plotting and inference calls are ignored.</p>
       <textarea id="import-code" spellcheck="false" placeholder='import pyagrum as gum&#10;bn = gum.fastBN("a->b<-c")'></textarea>
+      <label id="import-networks" class="import-networks" hidden>Network <select id="import-pick"></select> <span class="muted" id="import-networks-note"></span></label>
       <ul id="import-warnings" class="warn"></ul>
       <div class="dialog-actions">
-        <label class="file-button">Open file…<input id="import-file" type="file" accept=".py,.png,.svg,text/x-python,text/plain,image/png,image/svg+xml" hidden></label>
+        <label class="file-button">Open file…<input id="import-file" type="file" accept=".py,.ipynb,.png,.svg,text/x-python,text/plain,application/x-ipynb+json,image/png,image/svg+xml" hidden></label>
         <span class="grow"></span>
         <button value="close">Cancel</button>
         <button type="button" data-action="do-import" class="primary">Import</button>
@@ -87,6 +88,7 @@
   <div id="toast" role="status"></div>
 
   <script src="js/model.js"></script>
+  <script src="js/python.js"></script>
   <script src="js/pyagrum.js"></script>
   <script src="js/inference.js"></script>
   <script src="js/image.js"></script>

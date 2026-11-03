@@ -150,6 +150,9 @@ main { flex: 1; display: flex; min-height: 0; }
 .chip button.icon { font-size: 13px; }
 .warn { color: var(--danger); font-size: 13px; }
 ul.warn { padding-left: 18px; margin: 6px 0; max-height: 140px; overflow: auto; }
+.import-networks { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 13px; }
+.import-networks[hidden] { display: none; }
+.import-networks select { font: inherit; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); }
 .link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 .help dt { font-weight: 600; margin-top: 6px; }
 .help dd { margin: 0 0 0 0; color: var(--muted); }

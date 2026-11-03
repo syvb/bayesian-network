@@ -57,15 +57,20 @@ bn.cpt("wet_grass")[{"sprinkler": "off", "rain": "no"}] = [1, 0]
 
 **Pictures:** the Export dialog can also download the canvas as a **PNG** or **SVG**, exactly as it's shown. With Probabilities on, that includes each node's probability bars and a line listing the evidence. The pyAgrum code is embedded in the file (an SVG `<metadata>` element or a PNG `iTXt` chunk), so Import, or dropping the image on the canvas, restores the network.
 
-**Sharing by link:** open the editor with `?src=<url>` to load a `.py`, `.png` or `.svg` file from anywhere, e.g. `index.html?src=https://raw.githubusercontent.com/me/models/main/asia.py`. Encode the URL if it contains `&` or `#` (`encodeURIComponent`). The file's server has to allow cross-origin downloads (CORS); GitHub raw files and gists do, and GitHub `…/blob/…` and gist page URLs are converted to their raw versions automatically. The code is parsed, never executed, so opening an untrusted link is safe. Loading a link replaces the current network, and `Ctrl+Z` brings it back. Reloading the same tab keeps your edits rather than fetching the file again.
+**Sharing by link:** open the editor with `?src=<url>` to load a `.py`, `.ipynb`, `.png` or `.svg` file from anywhere, e.g. `index.html?src=https://raw.githubusercontent.com/me/models/main/asia.py`. Encode the URL if it contains `&` or `#` (`encodeURIComponent`). The file's server has to allow cross-origin downloads (CORS); GitHub raw files and gists do, and GitHub `…/blob/…` and gist page URLs are converted to their raw versions automatically. The code runs in the editor's own sandboxed Python interpreter (see below), never in a real Python, so opening an untrusted link is safe. Loading a link replaces the current network, and `Ctrl+Z` brings it back. Reloading the same tab keeps your edits rather than fetching the file again.
 
 The final comment stores node positions so that re-importing restores the layout.
 
-**Import** (or drop a `.py` file on the canvas) reads a practical subset of Python:
+**Import** (or drop a file on the canvas) accepts pyAgrum scripts, Jupyter notebooks (`.ipynb`, code cells only) and pictures exported from this editor. Scripts run in a small Python interpreter written in JavaScript (`js/python.js`): it has no access to files, the network or the page, and stops runaway loops and oversized values. It covers what model-building code usually needs: functions, loops, conditionals, comprehensions, f-strings and `%` formatting, lists, dicts, sets, and a little of `numpy`, `math` and `random`. Plotting, notebook display and inference calls (`gnb.*`, `plt.*`, `gum.LazyPropagation`, ...) are accepted and ignored.
 
-- `gum.BayesNet(...)` and `gum.fastBN("a{x|y}->b[3]<-c", ...)`
-- the variable constructors above, including `.addLabel(...)` chains
-- `bn.add(var)`, `bn.add("name", n)`, `bn.addArc`, `bn.addArcs`, `bn.eraseArc`, `bn.reverseArc` and `bn.erase`, with node names or ids
-- `bn.cpt(x).fillWith(...)`, `.normalizeAsCPT()`, `bn.cpt(x)[{...}] = ...`, `bn.cpt(x)[:] = ...` and numpy-style indices such as `bn.cpt(x)[1, 0, :] = ...`
+On the pyAgrum side it supports:
 
-Loops, functions and other control flow are skipped, and each skipped line is reported as a warning. `fastBN` CPTs are random, as they are in pyAgrum.
+- `gum.BayesNet(...)` (including copies, `gum.BayesNet(other)`), `gum.fastBN("a{x|y}->b[3]<-c", ...)` and `gum.fastVariable`
+- the variable constructors above plus `NumericalDiscreteVariable`, with `.addLabel`, `.changeLabel`, `.addTick` and `.addValue`
+- `bn.add`, `bn.addArc(s)`, `bn.eraseArc`, `bn.reverseArc`, `bn.erase`, `bn.changeVariableName`, `bn.changeVariableLabel`, and lookups such as `bn.idFromName`, `bn.variable`, `bn.parents`, `bn.names`
+- CPTs: `fillWith`, `fillFromFunction("...")`, `normalize`, `normalizeAsCPT`, `translate`, `scale`, `bn.cpt(x)[{...}] = ...` and numpy-style indices such as `bn.cpt(x)[1, :] = ...`
+- aggregators and noisy gates (`addMAX`, `addMIN`, `addSUM`, `addAMPLITUDE`, `addMEDIAN`, `addCOUNT`, `addEXISTS`, `addFORALL`, `addOR`, `addAND`, `addNoisyOR`, `addNoisyORNet`, `addNoisyAND`, `addLogit`, `addWeightedArc`), whose CPTs are computed the way pyAgrum does and imported as plain CPTs
+
+When the code builds several networks, the Import dialog lets you choose which one to load (the largest by default). Lines that can't be run are skipped and listed as warnings, as are CPT cells the code never fills (pyAgrum leaves them at 0). `fastBN` CPTs are random, as they are in pyAgrum. Influence diagrams, Markov random fields and `gum.loadBN(file)` aren't supported.
+
+The importer is checked against pyAgrum itself: scripts and notebooks from pyAgrum's documentation and GitHub, and the bnlearn benchmark networks (alarm, hailfinder, andes, pathfinder, link, munin with 1,041 variables, ...) written out as pyAgrum code, import to exactly the CPTs pyAgrum computes.

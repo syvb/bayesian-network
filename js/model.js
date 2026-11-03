@@ -126,7 +126,8 @@
 
   function snapshotShape(net) {
     const shape = new Map();
-    for (const n of net.nodes) shape.set(n.id, { labels: n.labels.slice(), parents: parentsOf(net, n.id), cpt: n.cpt });
+    for (const n of net.nodes) shape.set(n.id, { labels: n.labels.slice(), parents: [], cpt: n.cpt });
+    for (const a of net.arcs) shape.get(a.to)?.parents.push(a.from);
     return shape;
   }
 
@@ -136,15 +137,19 @@
     const before = snapshotShape(net);
     const result = fn();
     const after = snapshotShape(net);
+    const relabeled = new Set();
+    for (const [id, n] of after) {
+      const o = before.get(id);
+      if (!o || o.labels.length !== n.labels.length || o.labels.some((l, i) => l !== n.labels[i])) relabeled.add(id);
+    }
     for (const node of net.nodes) {
       const o = before.get(node.id);
       if (!o) continue;
       const n = after.get(node.id);
-      const vars = [node.id].concat(n.parents);
-      const oldVars = [node.id].concat(o.parents);
       const changed =
-        vars.length !== oldVars.length ||
-        vars.some((v, i) => v !== oldVars[i] || before.get(v)?.labels.join("\u0000") !== after.get(v).labels.join("\u0000"));
+        relabeled.has(node.id) ||
+        n.parents.length !== o.parents.length ||
+        n.parents.some((v, i) => v !== o.parents[i] || relabeled.has(v));
       if (changed) node.cpt = remapCpt(before, after, node.id, o.parents, n.parents);
     }
     return result;

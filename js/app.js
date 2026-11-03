@@ -990,6 +990,7 @@
 
   function openImport() {
     $("#import-warnings").innerHTML = "";
+    $("#import-networks").hidden = true;
     const btn = document.querySelector('[data-action="do-import"]');
     btn.textContent = "Import";
     btn.dataset.done = "";
@@ -997,10 +998,17 @@
     $("#import-code").focus();
   }
 
-  // Returns true when a network was loaded.
-  function importCode(src) {
-    const { net: imported, warnings } = P.importPython(src);
+  // Returns true when a network was loaded. `pick` chooses among several networks built by the code.
+  function importCode(src, pick) {
+    const { net: imported, warnings, networks = [], picked } = P.importPython(src, { pick });
     $("#import-warnings").innerHTML = warnings.map((w) => `<li>${esc(w)}</li>`).join("");
+    const multiple = networks.length > 1;
+    $("#import-networks").hidden = !multiple;
+    if (multiple) {
+      $("#import-pick").innerHTML = networks.map((n, i) =>
+        `<option value="${i}"${i === picked ? " selected" : ""}>${esc(n.label)} (${n.nodes} variable${n.nodes === 1 ? "" : "s"}, ${n.arcs} arc${n.arcs === 1 ? "" : "s"})</option>`).join("");
+      $("#import-networks-note").textContent = `The code builds ${networks.length} networks; pick the one to import.`;
+    }
     if (!imported) return false;
     clearEvidence();
     change(() => { net = imported; });
@@ -1024,7 +1032,7 @@
     const btn = document.querySelector('[data-action="do-import"]');
     if (btn.dataset.done) { $("#import-dialog").close(); return false; }
     if (!importCode($("#import-code").value)) return false;
-    if ($("#import-warnings").children.length) { btn.textContent = "Done"; btn.dataset.done = "1"; }
+    if ($("#import-warnings").children.length || !$("#import-networks").hidden) { btn.textContent = "Done"; btn.dataset.done = "1"; }
     else $("#import-dialog").close();
     return true;
   }
@@ -1071,6 +1079,7 @@
     const btn = document.querySelector('[data-action="do-import"]');
     btn.textContent = "Import"; btn.dataset.done = "";
   });
+  $("#import-pick").addEventListener("change", (e) => importCode($("#import-code").value, +e.target.value));
   $("#import-file").addEventListener("change", (e) => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ""; });
 
   const wrap = $("#canvas-wrap");
