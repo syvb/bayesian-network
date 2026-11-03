@@ -179,8 +179,17 @@
 
   function applyView() {
     viewport.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`);
-    svg.style.backgroundSize = `${20 * view.k}px ${20 * view.k}px`;
-    svg.style.backgroundPosition = `${view.x}px ${view.y}px`;
+    // The dot grid lives in the SVG, so it moves exactly with the nodes. Zoomed out, every 2nd
+    // (4th, ...) dot is kept so the dots stay at least 14px apart instead of blurring together.
+    let step = 20 * view.k;
+    while (step < 14) step *= 2;
+    const dots = $("#grid-dots");
+    dots.setAttribute("width", step);
+    dots.setAttribute("height", step);
+    dots.setAttribute("x", view.x - step / 2);
+    dots.setAttribute("y", view.y - step / 2);
+    dots.firstElementChild.setAttribute("cx", step / 2);
+    dots.firstElementChild.setAttribute("cy", step / 2);
     if (!inline.hidden) positionInline();
     positionSoftEditor();
   }

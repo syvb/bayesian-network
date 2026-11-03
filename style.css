@@ -90,9 +90,9 @@ main { flex: 1; display: flex; min-height: 0; }
   user-select: none;
   touch-action: none;
   background-color: var(--bg);
-  background-image: radial-gradient(var(--grid) 1.2px, transparent 1.2px);
-  background-size: 20px 20px;
 }
+#grid { pointer-events: none; }
+.grid-dot { fill: var(--grid); }
 #canvas.panning { cursor: grabbing; }
 
 .node rect.body { fill: var(--node); stroke: var(--node-border); stroke-width: 1.5; }
