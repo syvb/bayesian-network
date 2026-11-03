@@ -57,6 +57,8 @@ bn.cpt("wet_grass")[{"sprinkler": "off", "rain": "no"}] = [1, 0]
 
 **Pictures:** the Export dialog can also download the canvas as a **PNG** or **SVG**, exactly as it's shown. With Probabilities on, that includes each node's probability bars and a line listing the evidence. The pyAgrum code is embedded in the file (an SVG `<metadata>` element or a PNG `iTXt` chunk), so Import, or dropping the image on the canvas, restores the network.
 
+**Sharing by link:** open the editor with `?src=<url>` to load a `.py`, `.png` or `.svg` file from anywhere, e.g. `index.html?src=https://raw.githubusercontent.com/me/models/main/asia.py`. Encode the URL if it contains `&` or `#` (`encodeURIComponent`). The file's server has to allow cross-origin downloads (CORS); GitHub raw files and gists do, and GitHub `…/blob/…` and gist page URLs are converted to their raw versions automatically. The code is parsed, never executed, so opening an untrusted link is safe. Loading a link replaces the current network, and `Ctrl+Z` brings it back. Reloading the same tab keeps your edits rather than fetching the file again.
+
 The final comment stores node positions so that re-importing restores the layout.
 
 **Import** (or drop a `.py` file on the canvas) reads a practical subset of Python:

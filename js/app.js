@@ -5,6 +5,7 @@
   const EVIDENCE_KEY = "bn-editor-evidence";
   const PROBS_KEY = "bn-editor-show-probabilities";
   const SOFT_KEY = "bn-editor-soft-evidence";
+  const SRC_KEY = "bn-editor-loaded-src";
   const NODE_H = 50;
   // probability view: header, then one row per state with a bar
   const PROB_HEAD = 30, PROB_ROW = 18, PROB_BAR = 64, PROB_PCT = 44, PROB_LABEL_MAX = 110;
@@ -778,7 +779,7 @@
         <dt>CPTs</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (with “Keep rows summing to 1” on, the rest of the row is adjusted for you), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
         <dt>Probabilities &amp; evidence</dt><dd>With <b>Probabilities</b> on (<kbd>P</kbd>), every node shows the probability of each of its states, computed exactly from the CPTs. Click a state to observe it (for example “the grass is wet”); all other nodes update to the probabilities given that evidence. Click it again, or use the evidence bar, to clear it. Turn on <b>Soft evidence</b> in the evidence bar to enter likelihoods for a node's states instead of a certain observation.</dd>
         <dt>Delete / duplicate</dt><dd><kbd>Del</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd>. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</dd>
-        <dt>pyAgrum</dt><dd>Export writes <code>import pyagrum as gum</code> code; <kbd>Ctrl</kbd>+<kbd>S</kbd> downloads it. Import accepts that code, hand-written <code>gum.BayesNet</code> code, and <code>gum.fastBN</code>. Export can also save a PNG or SVG picture of the canvas (with probabilities, if shown) that has the network embedded, so the picture can be imported again. You can drop a .py, .png or .svg file on the canvas.</dd>
+        <dt>pyAgrum</dt><dd>Export writes <code>import pyagrum as gum</code> code; <kbd>Ctrl</kbd>+<kbd>S</kbd> downloads it. Import accepts that code, hand-written <code>gum.BayesNet</code> code, and <code>gum.fastBN</code>. Export can also save a PNG or SVG picture of the canvas (with probabilities, if shown) that has the network embedded, so the picture can be imported again. You can drop a .py, .png or .svg file on the canvas. To share a network, host one of those files somewhere that allows cross-origin downloads (e.g. a GitHub repo or gist) and link to this page with <code>?src=</code> followed by the file's URL.</dd>
       </dl>`;
     const nameInput = panel.querySelector("#net-name");
     nameInput.onchange = () => change(() => { net.name = nameInput.value; });
@@ -1009,21 +1010,60 @@
     return true;
   }
 
+  // Returns true when a network was loaded.
   async function importFile(file) {
     let text = await BNImage.codeFromFile(file);
-    if (text === null) { toast("This image doesn't contain a network exported from this editor"); return; }
+    if (text === null) { toast("This image doesn't contain a network exported from this editor"); return false; }
     if (text === undefined) text = await file.text();
     $("#import-code").value = text;
     if (!$("#import-dialog").open) openImport();
-    finishImport();
+    return finishImport();
   }
 
   function finishImport() {
     const btn = document.querySelector('[data-action="do-import"]');
-    if (btn.dataset.done) { $("#import-dialog").close(); return; }
-    if (importCode($("#import-code").value)) {
-      if ($("#import-warnings").children.length) { btn.textContent = "Done"; btn.dataset.done = "1"; }
-      else $("#import-dialog").close();
+    if (btn.dataset.done) { $("#import-dialog").close(); return false; }
+    if (!importCode($("#import-code").value)) return false;
+    if ($("#import-warnings").children.length) { btn.textContent = "Done"; btn.dataset.done = "1"; }
+    else $("#import-dialog").close();
+    return true;
+  }
+
+  // ------------------------------------------------------------ ?src= links
+
+  // GitHub "blob" and gist page URLs don't allow cross-origin downloads; their raw versions do.
+  function rawUrl(url) {
+    const blob = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/blob\/(.+)$/.exec(url);
+    if (blob) return `https://raw.githubusercontent.com/${blob[1]}/${blob[2]}`;
+    const gist = /^https:\/\/gist\.github\.com\/([^/]+\/[0-9a-f]+)\/?$/i.exec(url);
+    if (gist) return `https://gist.githubusercontent.com/${gist[1]}/raw`;
+    return url;
+  }
+
+  // Loads the network from the file named by ?src=<url> (.py, or a .png/.svg exported here).
+  // Reloading the same tab keeps local edits instead of fetching the file again.
+  async function loadFromLink() {
+    const src = new URLSearchParams(location.search).get("src");
+    if (!src || sessionStorage.getItem(SRC_KEY) === src) return;
+    sessionStorage.setItem(SRC_KEY, src);
+    let url;
+    try { url = new URL(rawUrl(src), location.href); } catch { toast("The link's src isn't a valid URL"); return; }
+    toast(`Loading ${url.href}…`);
+    let res;
+    try {
+      res = await fetch(url);
+    } catch {
+      toast("Couldn't download the linked network. The server may not allow cross-origin downloads (CORS).");
+      return;
+    }
+    if (!res.ok) { toast(`Couldn't download the linked network (HTTP ${res.status})`); return; }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    // Name the file by its content so the importer knows how to read it.
+    const head = new TextDecoder().decode(bytes.subarray(0, 512));
+    const name = bytes[0] === 0x89 && head.startsWith("PNG", 1) ? "network.png"
+      : /^\s*(<\?xml[^>]*>\s*)?<svg\b/.test(head) ? "network.svg" : "network.py";
+    if (await importFile(new File([bytes], name))) {
+      toast(`Loaded ${net.nodes.length} variables from the link (Ctrl+Z to go back)`);
     }
   }
 
@@ -1124,6 +1164,7 @@
   cpt.render(cptNodeId());
   updateButtons();
   requestAnimationFrame(fit);
+  loadFromLink();
 
   // Exposed for debugging from the console.
   globalThis.bnEditor = { get net() { return net; }, select, render };
