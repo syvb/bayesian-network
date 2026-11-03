@@ -23,6 +23,7 @@
     <span class="hint">Double-click: new node · Drag a node's handle: new arc · Del: delete</span>
   </header>
   <main>
+    <div id="work">
     <div id="canvas-wrap">
       <svg id="canvas" tabindex="0">
         <defs>
@@ -36,6 +37,8 @@
         <g id="viewport"></g>
       </svg>
       <input id="inline-edit" type="text" spellcheck="false" hidden>
+    </div>
+    <section id="cpt-dock" aria-label="Conditional probability table"></section>
     </div>
     <aside id="panel"></aside>
   </main>
@@ -73,6 +76,7 @@
 
   <script src="js/model.js"></script>
   <script src="js/pyagrum.js"></script>
+  <script src="js/cpt.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

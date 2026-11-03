@@ -21,7 +21,7 @@
 
   function sample() {
     const n = M.createNetwork("Wet grass");
-    const add = (name, labels, x, y, cpt) => { const nd = M.addNode(n, { name, labels, x, y }); return nd; };
+    const add = (name, labels, x, y) => M.addNode(n, { name, labels, x, y });
     const c = add("cloudy", ["no", "yes"], 300, 80);
     const s = add("sprinkler", ["off", "on"], 160, 200);
     const r = add("rain", ["no", "yes"], 440, 200);
@@ -65,15 +65,27 @@
     pruneSelection();
     save();
     render();
+    cpt.render(cptNodeId());
     schedulePanel();
     updateButtons();
   }
+
+  const cptNodeId = () => (!selArc && selNodes.size === 1 ? [...selNodes][0] : null);
 
   // The panel is rebuilt after the current event finishes, so that a click which blurred (and
   // committed) one panel field can still move focus to the field that was clicked.
   let panelTimer = null;
   function schedulePanel() {
     if (panelTimer === null) panelTimer = setTimeout(() => { panelTimer = null; renderPanel(); });
+  }
+
+  // Renders a pending panel update now, for edits made from the keyboard or a click inside the
+  // panel, so keys typed right after them reach the re-rendered fields.
+  function flushPanel() {
+    if (panelTimer === null) return;
+    clearTimeout(panelTimer);
+    panelTimer = null;
+    renderPanel();
   }
 
   function restore(from, to) {
@@ -100,6 +112,7 @@
     selArc = arc;
     render();
     renderPanel();
+    cpt.render(cptNodeId());
   }
 
   let toastTimer;
@@ -395,9 +408,16 @@
 
   document.addEventListener("keydown", (e) => {
     const inField = e.target.closest("input, textarea, select, dialog");
+    const inGrid = e.target.closest(".cpt-scroll");
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); downloadPython(); return; }
-    if (inField) return;
+    if (inGrid && !inField && mod && !cpt.isEditing()) {
+      // the CPT grid handles its own keys, but undo/redo stay global
+      if (e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+      else if (e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
+      return;
+    }
+    if (inField || inGrid) return;
     if (e.target.closest("button") && (e.key === "Enter" || e.key === " ")) return;
     if (mod && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
     else if (mod && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
@@ -407,6 +427,7 @@
     else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelection(); }
     else if (e.key === "Escape") select([]);
     else if (e.key === "f" || e.key === "F") fit();
+    else if ((e.key === "c" || e.key === "C") && cptNodeId() != null) { e.preventDefault(); cpt.focus(); }
     else if (e.key === "n" || e.key === "N") { e.preventDefault(); addNodeShortcut(); }
     else if (e.key === "Enter" && selNodes.size === 1) { e.preventDefault(); startInlineEdit([...selNodes][0]); }
     else if (e.key.startsWith("Arrow") && selNodes.size) {
@@ -497,6 +518,7 @@
         <dt>Rename</dt><dd>Double-click a node, or select it and press <kbd>Enter</kbd>.</dd>
         <dt>Select</dt><dd>Click; <kbd>Ctrl</kbd>-click to add; <kbd>Shift</kbd>-drag on empty space for a box; <kbd>Ctrl</kbd>+<kbd>A</kbd> for all.</dd>
         <dt>Move</dt><dd>Drag nodes, or nudge with arrow keys. Drag empty space to pan, scroll to zoom, <kbd>F</kbd> to fit.</dd>
+        <dt>Probabilities</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (auto-balance keeps rows summing to 1), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
         <dt>Delete / duplicate</dt><dd><kbd>Del</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd>. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</dd>
         <dt>pyAgrum</dt><dd>Export writes <code>import pyagrum as gum</code> code; <kbd>Ctrl</kbd>+<kbd>S</kbd> downloads it. Import accepts that code, hand-written <code>gum.BayesNet</code> code, and <code>gum.fastBN</code>. You can also drop a .py file on the canvas.</dd>
       </dl>`;
@@ -551,6 +573,7 @@
     if (!labels.length) { toast("A variable needs at least one state"); renderPanel(); return; }
     if (new Set(labels).size !== labels.length) { toast("State names must be unique"); renderPanel(); return; }
     change(() => M.updateDomain(net, n.id, spec));
+    flushPanel();
   }
 
   function renderNodePanel(n) {
@@ -571,12 +594,8 @@
       <div class="chips">${parents.map((p) => chip(p, "parent")).join("") || '<span class="muted">None</span>'}</div>
       <h3>Children</h3>
       <div class="chips">${children.map((c) => chip(c, "child")).join("") || '<span class="muted">None</span>'}</div>
-      <h3>CPT <span class="grow"></span>
-        <button class="small" data-act="normalize" title="Scale every row to sum to 1">Normalize</button>
-        <button class="small" data-act="uniform">Uniform</button>
-        <button class="small" data-act="random">Random</button>
-      </h3>
-      ${cptTable(n)}
+      <h3>Probabilities</h3>
+      <p class="muted">Edit this variable's CPT in the table below the canvas (press <kbd>C</kbd> to jump there).</p>
       <p style="margin-top:16px"><button class="danger" data-act="delete">Delete variable</button></p>`;
 
     const name = panel.querySelector("#n-name");
@@ -643,85 +662,7 @@
       const [from, to] = b.dataset.removeArc.split(">").map(Number);
       change(() => M.removeArc(net, from, to));
     }));
-    panel.querySelector('[data-act="normalize"]').onclick = () => change(() => M.normalizeCpt(n));
-    panel.querySelector('[data-act="uniform"]').onclick = () => change(() => M.uniformizeCpt(n));
-    panel.querySelector('[data-act="random"]').onclick = () => change(() => M.randomizeCpt(n));
     panel.querySelector('[data-act="delete"]').onclick = deleteSelection;
-    bindCptInputs(n);
-  }
-
-  const MAX_ROWS = 2000;
-  function cptTable(n) {
-    const { parents, rows } = M.cptRows(net, n.id);
-    const c = n.labels.length;
-    const head = parents.map((p) => `<th>${esc(p.name)}</th>`).join("") +
-      n.labels.map((l) => `<th class="state">${esc(l)}</th>`).join("") + "<th></th>";
-    const body = rows.slice(0, MAX_ROWS).map((r, ri) => {
-      const prev = ri > 0 ? rows[ri - 1].idx : null;
-      let changed = false;
-      const pcells = parents.map((p, k) => {
-        changed = changed || !prev || prev[k] !== r.idx[k];
-        return `<td class="parent${changed ? " first" : ""}">${esc(p.labels[r.idx[k]])}</td>`;
-      }).join("");
-      const cells = n.labels.map((_, s) => `<td><input type="text" inputmode="decimal" data-cell="${r.offset + s}" data-row="${r.offset}" data-r="${ri}" data-s="${s}" value="${M.fmtNum(n.cpt[r.offset + s])}"></td>`).join("");
-      return `<tr data-offset="${r.offset}">${pcells}${cells}<td class="sum"></td></tr>`;
-    }).join("");
-    const more = rows.length > MAX_ROWS ? `<p class="warn">Showing the first ${MAX_ROWS} of ${rows.length} rows.</p>` : "";
-    return `<div class="cpt-wrap"><table class="cpt"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${more}
-      <p class="muted">${c === 2 ? "Editing one entry sets the other to 1 − p. " : ""}Use <kbd>Tab</kbd>, <kbd>Enter</kbd> and arrow keys to move between cells.</p>`;
-  }
-
-  function updateRowSum(tr, n) {
-    const o = +tr.dataset.offset, c = n.labels.length;
-    let sum = 0;
-    for (let s = 0; s < c; s++) sum += n.cpt[o + s];
-    const ok = Math.abs(sum - 1) <= 1e-6 && n.cpt.slice(o, o + c).every((v) => v >= 0);
-    tr.classList.toggle("bad", !ok);
-    tr.querySelector(".sum").textContent = ok ? "" : "Σ " + M.fmtNum(+sum.toFixed(6));
-  }
-
-  function bindCptInputs(n) {
-    const c = n.labels.length;
-    const tbody = panel.querySelector("table.cpt tbody");
-    tbody.querySelectorAll("tr").forEach((tr) => updateRowSum(tr, n));
-    let dirty = false;
-    tbody.addEventListener("focusin", (e) => { if (e.target.dataset.cell) { dirty = false; e.target.select(); } });
-    tbody.addEventListener("input", (e) => {
-      const input = e.target, i = +input.dataset.cell;
-      const v = parseFloat(input.value);
-      if (!Number.isFinite(v)) return;
-      if (!dirty) { checkpoint(); dirty = true; }
-      n.cpt[i] = v;
-      if (c === 2) {
-        const other = +input.dataset.row + (1 - +input.dataset.s);
-        n.cpt[other] = +(1 - v).toPrecision(12);
-        const oi = tbody.querySelector(`[data-cell="${other}"]`);
-        if (oi) oi.value = M.fmtNum(n.cpt[other]);
-      }
-      updateRowSum(input.closest("tr"), n);
-      save();
-    });
-    tbody.addEventListener("focusout", (e) => {
-      if (!e.target.dataset.cell) return;
-      e.target.value = M.fmtNum(n.cpt[+e.target.dataset.cell]);
-      if (dirty) { dirty = false; render(); }
-    });
-    tbody.addEventListener("keydown", (e) => {
-      const input = e.target;
-      if (!input.dataset.cell) return;
-      const r = +input.dataset.r, s = +input.dataset.s;
-      const moves = { Enter: [e.shiftKey ? -1 : 1, 0], ArrowDown: [1, 0], ArrowUp: [-1, 0] };
-      if (moves[e.key]) {
-        const [dr] = moves[e.key];
-        const next = tbody.querySelector(`[data-r="${r + dr}"][data-s="${s}"]`);
-        if (next) { e.preventDefault(); next.focus(); }
-        else if (e.key === "Enter") { e.preventDefault(); input.blur(); }
-      } else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && input.selectionStart === input.selectionEnd &&
-                 input.selectionStart === (e.key === "ArrowLeft" ? 0 : input.value.length)) {
-        const next = tbody.querySelector(`[data-r="${r}"][data-s="${s + (e.key === "ArrowLeft" ? -1 : 1)}"]`);
-        if (next) { e.preventDefault(); next.focus(); }
-      }
-    });
   }
 
   // ------------------------------------------------------------ import / export
@@ -827,9 +768,20 @@
 
   // ------------------------------------------------------------ start
 
+  const cpt = BNCptEditor.createCptEditor($("#cpt-dock"), {
+    getNet: () => net,
+    change,
+    checkpoint,
+    afterDirectEdit: () => { save(); render(); cpt.render(cptNodeId()); schedulePanel(); },
+    toast,
+    onEscape: () => svg.focus(),
+    onResize: () => render(),
+  });
+
   net = load();
   render();
   renderPanel();
+  cpt.render(cptNodeId());
   updateButtons();
   requestAnimationFrame(fit);
 
