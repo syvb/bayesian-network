@@ -146,7 +146,7 @@ bn.cpt("yellow leaves")[{"root rot": "yes", "light": "bright"}] = [0.7, 0.3]
 bn.cpt("yellow leaves")[{"root rot": "yes", "light": "dim"}] = [0.8, 0.2]
 bn.cpt("yellow leaves")[{"root rot": "no", "light": "bright"}] = [0.05, 0.95]
 bn.cpt("yellow leaves")[{"root rot": "no", "light": "dim"}] = [0.35, 0.65]
-# bn-editor-layout: {"winter":[440,60],"watering":[240,190],"light":[800,190],"soil feels wet":[440,300],"drainage hole":[640,300],"root rot":[440,440],"drooping":[240,560],"yellow leaves":[640,560]}
+# bn-editor-layout: {"winter":[420,40],"watering":[160,160],"soil feels wet":[420,200],"drainage hole":[680,160],"light":[920,160],"root rot":[420,320],"drooping":[160,440],"yellow leaves":[680,440]}
 `;
 
   // The host never opens your door or the car's door. Set your choice and host opens as evidence:
