@@ -1,0 +1,24 @@
+name: Deploy to iter.ca
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Trigger scom deployment
+        env:
+          GH_TOKEN: ${{ secrets.SCOM_DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Set the SCOM_DEPLOY_TOKEN repository secret to a token with Actions write access to syvb/scom."
+            exit 1
+          fi
+          gh api --method POST repos/syvb/scom/actions/workflows/neocities.yml/dispatches \
+            -f ref=master
