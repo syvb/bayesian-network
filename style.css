@@ -679,6 +679,6 @@ body.embedded.viewer .toolbar .brand { display: none; }
 .watch-row .wbar { height: 9px; border: 0.5px solid var(--border); border-radius: 2px; background: var(--bg); overflow: hidden; }
 .watch-row .wbar span { display: block; height: 100%; background: var(--accent); opacity: 0.85; }
 .watch-row .wp { text-align: right; font-variant-numeric: tabular-nums; }
-.panel-title { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.panel-title { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-right: 22px; } /* clear of #panel-toggle */
 .panel-title h2 { margin-bottom: 0; }
 button.small.on { color: var(--accent); border-color: var(--accent); }
