@@ -367,9 +367,9 @@
   function labelWidth(n) {
     return Math.min(PROB_LABEL_MAX, Math.max(...n.labels.map((l) => Math.ceil(textWidth(l, "12px system-ui, sans-serif")))));
   }
-  function nodeSize(n) {
+  function nodeSize(n, probs = showProbs) {
     const extra = (nameLines(n.name).length - 1) * NAME_LH;
-    if (!showProbs) return { w: nodeWidth(n), h: NODE_H + extra };
+    if (!probs) return { w: nodeWidth(n), h: NODE_H + extra };
     return {
       w: Math.max(nodeWidth(n), 10 + labelWidth(n) + 8 + PROB_BAR + PROB_PCT + 6),
       h: PROB_HEAD + extra + n.labels.length * PROB_ROW + 8,
@@ -1738,7 +1738,7 @@
     "gist-sign-out": () => { BNGist.signOut(); showGist({}); toast("Forgot the GitHub sign-in"); },
     undo, redo,
     add: () => addNodeShortcut(true),
-    layout: () => { change(() => M.autoLayout(net)); fit(); },
+    layout: () => { change(() => M.autoLayout(net, (n) => nodeSize(n, true))); fit(); },
     fit,
     "copy-export": async () => { await navigator.clipboard.writeText($("#export-code").value); toast("Copied to clipboard"); },
     "download-export": downloadPython,

@@ -339,33 +339,256 @@
   }
 
   // Simple layered layout (longest path from roots, barycentric ordering).
-  function autoLayout(net) {
-    const layer = new Map();
-    const visit = (id) => {
-      if (layer.has(id)) return layer.get(id);
-      let l = 0;
-      for (const p of parentsOf(net, id)) l = Math.max(l, visit(p) + 1);
-      layer.set(id, l);
-      return l;
-    };
-    net.nodes.forEach((n) => visit(n.id));
-    const layers = [];
-    for (const n of net.nodes) (layers[layer.get(n.id)] ||= []).push(n);
-    const pos = new Map();
-    layers.forEach((ls, li) => {
-      if (li > 0) {
-        const bary = (n) => {
-          const ps = parentsOf(net, n.id);
-          return ps.length ? ps.reduce((a, p) => a + pos.get(p), 0) / ps.length : 0;
-        };
-        ls.sort((a, b) => bary(a) - bary(b));
-      }
-      ls.forEach((n, i) => pos.set(n.id, i - (ls.length - 1) / 2));
-    });
+  // A node's size in the probabilities view, estimated from its text (the editor passes exact
+  // sizes; this is for layouts made outside the page, such as on import).
+  function estimateSize(n) {
+    const nameW = n.name.length * 8.4, lines = Math.min(3, Math.max(1, Math.ceil(nameW / 200)));
+    const labelW = Math.min(110, Math.max(...n.labels.map((l) => l.length * 6.6)));
+    return { w: Math.max(84, Math.min(200, nameW) + 30, 10 + labelW + 8 + 64 + 44 + 6), h: 30 + (lines - 1) * 17 + n.labels.length * 18 + 8 };
+  }
+
+  // Layered layout (Sugiyama): parents above children, each arc pointing down.
+  //  1. Layers: longest path from the roots, then nodes with more children than parents (roots
+  //     in particular) are pulled down to just above their highest child, so they sit next to
+  //     what they cause instead of all at the top.
+  //  2. Arcs spanning several layers get a placeholder in each layer they cross, so other nodes
+  //     leave a gap for them and they're ordered like nodes.
+  //  3. Order within layers: barycenter sweeps down and up, keeping the order with the fewest
+  //     crossings. The starting order follows the current x positions, so re-running the
+  //     layout keeps the network's left-to-right arrangement where it can.
+  //  4. x positions: each node is pulled towards the average of its neighbours, with the
+  //     spacing its width needs (solved exactly per layer); placeholders line up so long arcs
+  //     run straight. Layers are as tall as their tallest node.
+  // Separate pieces of the network are laid out on their own and packed side by side; lone
+  // nodes go in a grid. sizeOf(node) gives {w, h}.
+  function autoLayout(net, sizeOf = estimateSize) {
+    if (!net.nodes.length) return;
+    const size = new Map(net.nodes.map((n) => [n.id, sizeOf(n)]));
+    const near = new Map(net.nodes.map((n) => [n.id, []]));
+    for (const a of net.arcs) { near.get(a.from).push(a.to); near.get(a.to).push(a.from); }
+    const seen = new Set(), pieces = [], lone = [];
     for (const n of net.nodes) {
-      n.x = 400 + pos.get(n.id) * 170;
-      n.y = 80 + layer.get(n.id) * 120;
+      if (seen.has(n.id)) continue;
+      const piece = [], stack = [n.id];
+      seen.add(n.id);
+      while (stack.length) {
+        const id = stack.pop();
+        piece.push(id);
+        for (const m of near.get(id)) if (!seen.has(m)) { seen.add(m); stack.push(m); }
+      }
+      (piece.length > 1 ? pieces : lone).push(piece);
     }
+    const blocks = pieces.sort((a, b) => b.length - a.length).map((p) => layoutPiece(net, new Set(p), size));
+    if (lone.length) blocks.push(gridBlock(net, lone.flat(), size));
+
+    // Pack the blocks in rows, left to right, no wider than the widest block (or 1400px).
+    const GAP = 80, maxW = Math.max(1400, ...blocks.map((b) => b.w));
+    let x = 0, y = 0, rowH = 0;
+    for (const b of blocks) {
+      if (x > 0 && x + b.w > maxW) { x = 0; y += rowH + GAP; rowH = 0; }
+      for (const [id, p] of b.pos) {
+        const n = getNode(net, id);
+        n.x = Math.round(100 + x + p.x);
+        n.y = Math.round(60 + y + p.y);
+      }
+      x += b.w + GAP;
+      rowH = Math.max(rowH, b.h);
+    }
+  }
+
+  function gridBlock(net, ids, size) {
+    const cols = Math.ceil(Math.sqrt(ids.length)), pos = new Map();
+    const colW = [], rowH = [];
+    ids.forEach((id, i) => {
+      const { w, h } = size.get(id), c = i % cols, r = Math.floor(i / cols);
+      colW[c] = Math.max(colW[c] || 0, w);
+      rowH[r] = Math.max(rowH[r] || 0, h);
+    });
+    const GAP_X = 40, GAP_Y = 40;
+    ids.forEach((id, i) => {
+      const c = i % cols, r = Math.floor(i / cols);
+      const x = colW.slice(0, c).reduce((a, b) => a + b + GAP_X, 0) + colW[c] / 2;
+      const y = rowH.slice(0, r).reduce((a, b) => a + b + GAP_Y, 0) + rowH[r] / 2;
+      pos.set(id, { x, y });
+    });
+    return { pos, w: colW.reduce((a, b) => a + b + GAP_X, -GAP_X), h: rowH.reduce((a, b) => a + b + GAP_Y, -GAP_Y) };
+  }
+
+  function layoutPiece(net, ids, size) {
+    const H_GAP = 40, DUMMY_GAP = 14, DUMMY_W = 14, V_GAP = 70, SWEEPS = 24;
+    const xNow = new Map(net.nodes.filter((n) => ids.has(n.id)).map((n) => [n.id, n.x || 0]));
+    const parents = new Map(), children = new Map();
+    for (const id of ids) { parents.set(id, []); children.set(id, []); }
+    for (const a of net.arcs) if (ids.has(a.from)) { children.get(a.from).push(a.to); parents.get(a.to).push(a.from); }
+
+    // 1. layers
+    const topo = [], indeg = new Map([...ids].map((id) => [id, parents.get(id).length]));
+    const queue = [...ids].filter((id) => !indeg.get(id));
+    while (queue.length) {
+      const id = queue.shift();
+      topo.push(id);
+      for (const c of children.get(id)) { indeg.set(c, indeg.get(c) - 1); if (!indeg.get(c)) queue.push(c); }
+    }
+    const layer = new Map();
+    for (const id of topo) layer.set(id, Math.max(-1, ...parents.get(id).map((p) => layer.get(p))) + 1);
+    // Moving a node down shortens its arcs to children and lengthens those from parents, so a
+    // node moves only when it has more children than parents (roots always do).
+    for (let i = topo.length - 1; i >= 0; i--) {
+      const ch = children.get(topo[i]);
+      if (ch.length > parents.get(topo[i]).length) layer.set(topo[i], Math.min(...ch.map((c) => layer.get(c))) - 1);
+    }
+
+    // 2. the layered graph, with placeholders ("d…") along long arcs
+    const up = new Map(), down = new Map(), lay = new Map(layer);
+    const vertex = (v, l) => { up.set(v, []); down.set(v, []); lay.set(v, l); };
+    for (const id of ids) vertex(id, layer.get(id));
+    let dn = 0;
+    for (const a of net.arcs) {
+      if (!ids.has(a.from)) continue;
+      let prev = a.from;
+      for (let l = layer.get(a.from) + 1; l < layer.get(a.to); l++) {
+        const d = "d" + dn++;
+        vertex(d, l);
+        down.get(prev).push(d); up.get(d).push(prev);
+        prev = d;
+      }
+      down.get(prev).push(a.to); up.get(a.to).push(prev);
+    }
+    const isDummy = (v) => typeof v === "string";
+    const nLayers = Math.max(...layer.values()) + 1;
+    const layers = Array.from({ length: nLayers }, () => []);
+
+    // starting order: depth-first from the roots, everything taken in current x order
+    const byX = (a, b) => xOf(a) - xOf(b);
+    const xOf = (v) => (isDummy(v) ? xOf(up.get(v)[0]) : xNow.get(v));
+    const placed = new Set();
+    const visit = (v) => {
+      if (placed.has(v)) return;
+      placed.add(v);
+      layers[lay.get(v)].push(v);
+      for (const c of [...down.get(v)].sort(byX)) visit(c);
+    };
+    [...ids].filter((id) => !parents.get(id).length).sort(byX).forEach(visit);
+
+    // 3. crossing reduction
+    const rank = new Map();
+    const setRanks = () => layers.forEach((l) => l.forEach((v, i) => rank.set(v, i)));
+    setRanks();
+    const crossingsBetween = (upper) => {
+      // count inversions among the arcs between layers upper and upper + 1 (Fenwick tree)
+      const edges = [];
+      for (const v of layers[upper]) for (const c of down.get(v)) edges.push([rank.get(v), rank.get(c)]);
+      edges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const n = layers[upper + 1].length, tree = new Array(n + 1).fill(0);
+      let count = 0, total = 0;
+      for (const [, b] of edges) {
+        let greater = total;
+        for (let i = b + 1; i > 0; i -= i & -i) greater -= tree[i];
+        count += greater;
+        for (let i = b + 1; i <= n; i += i & -i) tree[i]++;
+        total++;
+      }
+      return count;
+    };
+    const crossings = () => { let c = 0; for (let l = 0; l + 1 < nLayers; l++) c += crossingsBetween(l); return c; };
+    const reorder = (l, nbrs) => {
+      const vs = layers[l];
+      const bary = new Map();
+      for (const v of vs) {
+        const ns = nbrs.get(v);
+        if (ns.length) bary.set(v, ns.reduce((s, u) => s + rank.get(u), 0) / ns.length);
+      }
+      // vertices with no neighbours on that side keep their slot
+      const movable = vs.filter((v) => bary.has(v)).sort((a, b) => bary.get(a) - bary.get(b) || rank.get(a) - rank.get(b));
+      let k = 0;
+      layers[l] = vs.map((v) => (bary.has(v) ? movable[k++] : v));
+      layers[l].forEach((v, i) => rank.set(v, i));
+    };
+    // Crossings between the arcs of u and v (u left of v) towards one side.
+    const pairCross = (u, v, nbrs) => {
+      let c = 0;
+      for (const a of nbrs.get(u)) for (const b of nbrs.get(v)) if (rank.get(a) > rank.get(b)) c++;
+      return c;
+    };
+    // Swaps neighbours in a layer while that reduces crossings (the "transpose" step).
+    const transpose = () => {
+      for (let pass = 0, improved = true; improved && pass < 8; pass++) {
+        improved = false;
+        for (const vs of layers) {
+          for (let i = 0; i + 1 < vs.length; i++) {
+            const u = vs[i], v = vs[i + 1];
+            const now = pairCross(u, v, up) + pairCross(u, v, down), swapped = pairCross(v, u, up) + pairCross(v, u, down);
+            if (swapped < now) {
+              vs[i] = v; vs[i + 1] = u;
+              rank.set(v, i); rank.set(u, i + 1);
+              improved = true;
+            }
+          }
+        }
+      }
+    };
+    let best = layers.map((l) => l.slice()), bestCount = crossings();
+    for (let it = 0; it < SWEEPS && bestCount > 0; it++) {
+      if (it % 2 === 0) for (let l = 1; l < nLayers; l++) reorder(l, up);
+      else for (let l = nLayers - 2; l >= 0; l--) reorder(l, down);
+      transpose();
+      const c = crossings();
+      if (c < bestCount) { bestCount = c; best = layers.map((l) => l.slice()); }
+    }
+    best.forEach((l, i) => { layers[i] = l; });
+    setRanks();
+
+    // 4. x positions
+    const width = (v) => (isDummy(v) ? DUMMY_W : size.get(v).w);
+    const sep = (a, b) => (width(a) + width(b)) / 2 + (isDummy(a) || isDummy(b) ? DUMMY_GAP : H_GAP);
+    const x = new Map();
+    for (const vs of layers) {
+      let at = 0;
+      vs.forEach((v, i) => { if (i) at += sep(vs[i - 1], v); x.set(v, at); });
+      vs.forEach((v) => x.set(v, x.get(v) - at / 2));
+    }
+    // Moves layer l's vertices as close as possible to `want` (least squares) while keeping
+    // their order and spacing: pool-adjacent-violators on positions minus the minimum offsets.
+    const place = (vs, want) => {
+      const off = [0];
+      for (let i = 1; i < vs.length; i++) off[i] = off[i - 1] + sep(vs[i - 1], vs[i]);
+      const pools = [];
+      vs.forEach((v, i) => {
+        const w = isDummy(v) ? 2 : 1;
+        pools.push({ s: w * (want(v) - off[i]), w, n: 1 });
+        while (pools.length > 1 && pools[pools.length - 2].s / pools[pools.length - 2].w >= pools[pools.length - 1].s / pools[pools.length - 1].w) {
+          const b = pools.pop(), a = pools[pools.length - 1];
+          a.s += b.s; a.w += b.w; a.n += b.n;
+        }
+      });
+      let i = 0;
+      for (const p of pools) for (let k = 0; k < p.n; k++, i++) x.set(vs[i], p.s / p.w + off[i]);
+    };
+    const mean = (ns, v) => (ns.length ? ns.reduce((s, u) => s + x.get(u), 0) / ns.length : x.get(v));
+    for (let it = 0; it < 12; it++) {
+      if (it % 2 === 0) for (let l = 1; l < nLayers; l++) place(layers[l], (v) => mean(up.get(v), v));
+      else for (let l = nLayers - 2; l >= 0; l--) place(layers[l], (v) => mean(down.get(v), v));
+    }
+    for (let it = 0; it < 4; it++) {
+      for (let l = 0; l < nLayers; l++) place(layers[l], (v) => mean(up.get(v).concat(down.get(v)), v));
+    }
+
+    // y: each layer as tall as its tallest node, nodes centred in it
+    const pos = new Map();
+    let top = 0, x0 = Infinity, x1 = -Infinity;
+    for (const vs of layers) {
+      const h = Math.max(20, ...vs.filter((v) => !isDummy(v)).map((v) => size.get(v).h));
+      for (const v of vs) {
+        if (isDummy(v)) continue;
+        pos.set(v, { x: x.get(v), y: top + h / 2 });
+        x0 = Math.min(x0, x.get(v) - width(v) / 2);
+        x1 = Math.max(x1, x.get(v) + width(v) / 2);
+      }
+      top += h + V_GAP;
+    }
+    for (const v of layers.flat()) if (isDummy(v)) { x0 = Math.min(x0, x.get(v)); x1 = Math.max(x1, x.get(v)); }
+    for (const p of pos.values()) p.x -= x0;
+    return { pos, w: x1 - x0, h: top - V_GAP };
   }
 
   const api = {
