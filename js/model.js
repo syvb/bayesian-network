@@ -32,6 +32,36 @@
     }
   }
 
+  // ------------------------------------------------------------ exact numbers
+  // Shared with inference.js. A probability is read as the shortest decimal that round-trips its
+  // floating-point value (the digits that were typed), so 0.1 is exactly 1/10.
+
+  const pow10s = [];
+  const pow10 = (k) => (pow10s[k] ??= 10n ** BigInt(k));
+
+  // A finite x >= 0 as [m, e] with x = m / 10^e exactly, from its shortest round-trip decimal.
+  function decimal(x) {
+    if (x === 0) return [0n, 0];
+    let s = String(x), e = 0;
+    const ei = s.indexOf("e");
+    if (ei >= 0) { e = -Number(s.slice(ei + 1)); s = s.slice(0, ei); }
+    const di = s.indexOf(".");
+    if (di >= 0) { e += s.length - di - 1; s = s.slice(0, di) + s.slice(di + 1); }
+    return e >= 0 ? [BigInt(s), e] : [BigInt(s) * pow10(-e), 0];
+  }
+
+  const bitLength = (x) => x.toString(16).length * 4;
+
+  // a / b as the nearest floating-point number (a >= 0, b > 0), however big a and b are.
+  function ratio(a, b) {
+    if (a === 0n) return 0;
+    const shift = bitLength(b) - bitLength(a) + 64; // so that the quotient has 64 to 72 bits
+    const q = shift >= 0 ? (a << BigInt(shift)) / b : a / (b << BigInt(-shift));
+    // scale back in two steps, so that 2^-shift itself can't underflow or overflow
+    const half = Math.trunc(shift / 2);
+    return Number(q) * 2 ** -half * 2 ** -(shift - half);
+  }
+
   function createNetwork(name) {
     return { name: name || "BN", nextId: 1, nodes: [], arcs: [] };
   }
@@ -236,7 +266,9 @@
   function reversalError(net, from, to) {
     if (!hasArc(net, from, to)) return "There is no such arc";
     const without = { ...net, arcs: net.arcs.filter((a) => !(a.from === from && a.to === to)) };
-    return wouldCycle(without, to, from) ? "That arc would create a cycle" : null;
+    if (wouldCycle(without, to, from)) return "That arc would create a cycle";
+    const bad = [from, to].map((id) => getNode(net, id)).find((n) => badRows(n).length);
+    return bad ? `Fix the rows of ${bad.name}'s table that don't sum to 1 first` : null;
   }
 
   // pyAgrum's bn.reverseArc: flips the arc and keeps the joint distribution, by giving each of the
@@ -248,11 +280,25 @@
     const nf = getNode(net, from), nt = getNode(net, to);
     const cardOf = (id) => getNode(net, id).labels.length;
     const old = { [from]: { pa: parentsOf(net, from), cpt: nf.cpt }, [to]: { pa: parentsOf(net, to), cpt: nt.cpt } };
+    // In exact rational arithmetic ([numerator, denominator] BigInt pairs), so tiny probabilities
+    // and their products can't underflow to 0. Each old CPT row counts as divided by its exact sum.
+    const exactRows = (n) => {
+      const c = n.labels.length, rows = [];
+      for (let o = 0; o < n.cpt.length; o += c) {
+        const ds = n.cpt.slice(o, o + c).map(decimal);
+        const e = Math.max(...ds.map(([, k]) => k));
+        const ints = ds.map(([m, k]) => m * pow10(e - k));
+        rows.push({ ints, sum: ints.reduce((x, y) => x + y, 0n) });
+      }
+      return rows;
+    };
+    const rowsOf = { [from]: exactRows(nf), [to]: exactRows(nt) };
     const val = (id, a) => {
-      const { pa, cpt } = old[id];
+      const { pa } = old[id];
       let off = 0, s = 1;
       for (const p of pa) { off += a.get(p) * s; s *= cardOf(p); }
-      return cpt[off * cardOf(id) + a.get(id)];
+      const row = rowsOf[id][off];
+      return [row.ints[a.get(id)], row.sum];
     };
     net.arcs = net.arcs.filter((a) => !(a.from === from && a.to === to));
     for (const p of old[to].pa) if (p !== from && !hasArc(net, p, from)) net.arcs.push({ from: p, to: from });
@@ -269,10 +315,25 @@
       }
       return out;
     };
-    const joint = (a) => val(from, a) * val(to, a);
-    const marginal = (a) => { const keep = a.get(from); let t = 0; for (let f = 0; f < nf.labels.length; f++) { a.set(from, f); t += joint(a); } a.set(from, keep); return t; };
-    nt.cpt = cells(to, (a) => { a.set(from, 0); return marginal(a); });
-    nf.cpt = cells(from, (a) => { const m = marginal(a); return m > 0 ? joint(a) / m : 1 / nf.labels.length; });
+    const mul = ([a, b], [c, d]) => [a * c, b * d];
+    const add = ([a, b], [c, d]) => (b === d ? [a + c, b] : [a * d + c * b, b * d]);
+    const joint = (a) => mul(val(from, a), val(to, a));
+    const marginal = (a) => { const keep = a.get(from); let t = [0n, 1n]; for (let f = 0; f < nf.labels.length; f++) { a.set(from, f); t = add(t, joint(a)); } a.set(from, keep); return t; };
+    // P(to | its new parents): the marginal, divided by its row's sum (exactly 1 for exact rows)
+    nt.cpt = cells(to, (a) => { a.set(from, 0); const [m, d] = marginal(a); return [m, d]; });
+    {
+      const c = nt.labels.length;
+      for (let o = 0; o < nt.cpt.length; o += c) {
+        // the row's entries over one common denominator, then each as an exactly rounded ratio
+        const row = nt.cpt.slice(o, o + c), den = row.reduce((x, [, d]) => x * d, 1n);
+        const nums = row.map(([m, d]) => m * (den / d)), total = nums.reduce((x, y) => x + y, 0n);
+        nums.forEach((m, s) => { nt.cpt[o + s] = total > 0n ? ratio(m, total) : 1 / c; });
+      }
+    }
+    nf.cpt = cells(from, (a) => {
+      const [jn, jd] = joint(a), [mn, md] = marginal(a);
+      return mn > 0n ? ratio(jn * md, jd * mn) : 1 / nf.labels.length;
+    });
     delete nf.gate; delete nt.gate; // their CPTs now come from Bayes' rule, not the gate
     return null;
   }
@@ -653,7 +714,7 @@
     TYPES, fmtNum, labelsFor, createNetwork, getNode, nodeByName, parentsOf, childrenOf, card, uniqueName, setParentOrder,
     addNode, setDomain, uniformCpt, wouldCycle, hasArc, stateMap, restructure, addArc, removeArc, reverseArc,
     removeNode, updateDomain, cptRows, normalizeRow, normalizeCpt, randomizeCpt, uniformizeCpt, badRows,
-    autoLayout, strides, GATES, isTrueLabel, isFalseLabel, trueState, gateCpt, applyGates,
+    autoLayout, strides, pow10, decimal, ratio, GATES, isTrueLabel, isFalseLabel, trueState, gateCpt, applyGates,
   };
   globalThis.BNModel = api;
 })();

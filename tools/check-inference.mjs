@@ -153,6 +153,23 @@ for (let k = 0; k < 40; k++) {
     if (!I.posteriors(net, ev).error) fail(`${what} wasn't refused`);
   }
 }
+// Tiny probabilities: reversing an arc whose joint is 1e-170 * 1e-170 (below floating point) keeps
+// P(A=0 | B=0) = 1e-170, and a target of 1e-12 is met as closely as any other.
+{
+  const net = M.createNetwork("tiny");
+  const a = M.addNode(net, { name: "A", labels: ["0", "1"] }), b = M.addNode(net, { name: "B", labels: ["0", "1"] });
+  M.addArc(net, a.id, b.id);
+  a.cpt = [1e-170, 1]; b.cpt = [1e-170, 1, 1e-170, 1];
+  M.reverseArc(net, a.id, b.id);
+  const r = I.posteriors(net, new Map([[b.id, 0]]));
+  oracleCases++;
+  if (r.error || Math.abs(r.marginals.get(a.id)[0] / 1e-170 - 1) > 1e-12) fail("reversal with tiny probabilities:", r.error || r.marginals.get(a.id));
+  a.cpt = [0.5, 0.5]; b.cpt = [0.9, 0.1, 0.1, 0.9];
+  net.arcs = [{ from: a.id, to: b.id }];
+  const t = I.posteriors(net, new Map([[a.id, { target: [1e-12, 1 - 1e-12] }], [b.id, { target: [0.3, 0.7] }]]));
+  oracleCases++;
+  if (t.error || Math.abs(t.marginals.get(a.id)[0] / 1e-12 - 1) > 1e-6) fail("tiny target:", t.error || t.marginals.get(a.id));
+}
 console.log(`${oracleCases} cases checked against brute-force enumeration`);
 
 const check = `

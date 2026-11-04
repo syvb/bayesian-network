@@ -514,7 +514,7 @@
           n.labels.map((l, s) => {
             const y = -h / 2 + head + s * PROB_ROW;
             const p = probs ? probs[s] : null;
-            const pct = p === null ? "–" : p >= 0.9995 ? "100%" : (p * 100).toFixed(1) + "%";
+            const pct = p === null ? "–" : pctText(p, probs);
             return `<g class="state-row${observed === s ? " observed" : isDo(observed) && observed.do === s ? " intervened" : ""}" data-state="${s}">` +
               `<rect class="row-hit" x="${-w / 2 + 4}" y="${y}" width="${w - 8}" height="${PROB_ROW}" rx="3"/>` +
               `<text class="slabel" x="${-w / 2 + 10}" y="${y + 13}">${esc(truncate(l, "12px system-ui, sans-serif", lw))}</text>` +
@@ -654,6 +654,10 @@
     if (!inline.hidden) positionInline();
   }
 
+  // A probability as a short percentage that never rounds a possible state to 0% or a
+  // not-quite-certain one to 100%: 1e-9 shows as 1e-7%, 0.9999 as >99.9%. `all` is the whole
+  // distribution: a state whose rounded probability is 1 isn't certain while another is possible.
+  const pctText = (p, all = [p]) => p === 0 ? "0%" : p === 1 && all.every((q) => q === 0 || q === 1) ? "100%" : p < 0.0005 ? +(p * 100).toPrecision(2) + "%" : p >= 0.9995 ? ">99.9%" : (p * 100).toFixed(1) + "%";
   const fmtPct = (q) => +(q * 100).toPrecision(3) + "%";
   // What clicking a state does in the current mode, for the side panel (and the viewer).
   // A touchscreen: in the viewer, tapping a node opens its card (the bars are too small to tap).
@@ -1283,7 +1287,7 @@
       <div class="watch-name">${head}</div>${extra}
       ${n.labels.map((l, s) => {
         const p = probs ? probs[s] : null;
-        const pct = p === null ? "–" : p >= 0.9995 ? "100%" : (p * 100).toFixed(1) + "%";
+        const pct = p === null ? "–" : pctText(p, probs);
         const on = observed === s ? " observed" : isDo(observed) && observed.do === s ? " intervened" : "";
         return `<button class="watch-row${on}" data-watch-state="${s}" title="${esc(clickHint())}"><span class="wl">${esc(l)}</span><span class="wbar"><span style="width:${(p || 0) * 100}%"></span></span><span class="wp">${pct}</span></button>`;
       }).join("")}

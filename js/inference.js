@@ -18,38 +18,14 @@
 
   // ------------------------------------------------------------ exact numbers
 
-  const pow10s = [];
-  const pow10 = (k) => (pow10s[k] ??= 10n ** BigInt(k));
+  const { pow10, decimal, ratio } = M;
   const gcd = (a, b) => { while (b) [a, b] = [b, a % b]; return a; };
-
-  // A finite x >= 0 as [m, e] with x = m / 10^e exactly, from its shortest round-trip decimal.
-  function decimal(x) {
-    if (x === 0) return [0n, 0];
-    let s = String(x), e = 0;
-    const ei = s.indexOf("e");
-    if (ei >= 0) { e = -Number(s.slice(ei + 1)); s = s.slice(0, ei); }
-    const di = s.indexOf(".");
-    if (di >= 0) { e += s.length - di - 1; s = s.slice(0, di) + s.slice(di + 1); }
-    return e >= 0 ? [BigInt(s), e] : [BigInt(s) * pow10(-e), 0];
-  }
 
   // Numbers x[i] as integers over one denominator 10^e.
   function decimals(xs) {
     const ds = Array.from(xs, decimal);
     const e = ds.reduce((m, [, k]) => Math.max(m, k), 0);
     return { ints: ds.map(([m, k]) => (k < e ? m * pow10(e - k) : m)), den: pow10(e) };
-  }
-
-  const bitLength = (x) => x.toString(16).length * 4;
-
-  // a / b as the nearest floating-point number (a >= 0, b > 0), however big a and b are.
-  function ratio(a, b) {
-    if (a === 0n) return 0;
-    const shift = bitLength(b) - bitLength(a) + 64; // so that the quotient has 64 to 72 bits
-    const q = shift >= 0 ? (a << BigInt(shift)) / b : a / (b << BigInt(-shift));
-    // scale back in two steps, so that 2^-shift itself can't underflow or overflow
-    const half = Math.trunc(shift / 2);
-    return Number(q) * 2 ** -half * 2 ** -(shift - half);
   }
 
   // a / b (a > 0, b > 0) in scientific notation to `digits` significant digits, such as "1.23e-400",
@@ -270,7 +246,8 @@
   // Returns {marginals: Map(id -> number[]), pEvidence, likelihoods: Map(id -> number[])} or
   // {error, evidenceError?}. pEvidence covers only the hard and likelihood evidence (given the
   // interventions). Everything is exact except target evidence: its likelihoods are found
-  // numerically, to within 1e-9 of each target, and the result is exact for those likelihoods.
+  // numerically, to within a relative 1e-9 of each target probability (so a target of 1e-12 is met
+  // as closely as one of 0.5), and the result is exact for those likelihoods.
   function posteriors(net, evidence = new Map()) {
     const wrong = problem(net, evidence);
     if (wrong) return wrong;
@@ -289,7 +266,7 @@
     const targetIds = new Set(targets.map(([id]) => id));
     // First fit one target at a time against fresh marginals (iterative proportional fitting).
     // Adjusting all of them from the same marginals overshoots when targets depend on each other.
-    const fitted = (r) => targets.every(([id, { target }]) => r.marginals.get(id).every((p, s) => Math.abs(p - target[s]) <= 1e-9));
+    const fitted = (r) => targets.every(([id, { target }]) => r.marginals.get(id).every((p, s) => Math.abs(p - target[s]) <= 1e-9 * target[s]));
     let converged = false;
     for (let it = 0; it < 30 && !converged; it++) {
       for (const [id, { target }] of targets) {
@@ -353,8 +330,9 @@
     const residual = () => {
       const r = exact(net, ev, targetIds);
       if (r.error) return r;
-      const f = vars.map(([id, s]) => r.marginals.get(id)[s] - goal.get(id)[s]);
-      const worst = Math.max(...targets.map(([id, { target }]) => Math.max(...r.marginals.get(id).map((p, s) => Math.abs(p - target[s])))));
+      // relative errors, so that tiny targets count as much as large ones
+      const f = vars.map(([id, s]) => r.marginals.get(id)[s] / goal.get(id)[s] - 1);
+      const worst = Math.max(...targets.map(([id, { target }]) => Math.max(...r.marginals.get(id).map((p, s) => (target[s] > 0 ? Math.abs(p / target[s] - 1) : p > 0 ? Infinity : 0)))));
       return { r, f, norm: f.reduce((a, b) => a + b * b, 0), worst };
     };
     apply(x);
@@ -373,7 +351,7 @@
           const c = exact(net, ev, targetIds);
           ev.set(j, saved);
           if (c.error) continue; // P(j = u) is 0 here, so the column is 0
-          vars.forEach(([i, s], row) => { J[row][k] = q.get(j)[u] * c.marginals.get(i)[s] - q.get(i)[s] * q.get(j)[u]; });
+          vars.forEach(([i, s], row) => { J[row][k] = (q.get(j)[u] * c.marginals.get(i)[s] - q.get(i)[s] * q.get(j)[u]) / goal.get(i)[s]; });
         }
       }
       const JtJ = vars.map((_, a) => vars.map((_, b) => J.reduce((t, row) => t + row[a] * row[b], 0)));

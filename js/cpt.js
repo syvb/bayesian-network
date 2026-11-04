@@ -29,18 +29,43 @@
 
   // Accepts 0.3, .3, 30%, 1/3 (and in percent format, 30 means 30%). In log-odds format a plain
   // number (negative too) or inf / -inf is log-odds; 30% and 1/3 are still probabilities.
+  // "30" percent as the number nearest to 0.30 (dividing by 100 would give 1e-7% as 9.99e-10)
+  const fromPercent = (x) => { const [mant, ex = "0"] = x.toLowerCase().split("e"); return Number(`${mant}e${Number(ex) - 2}`); };
+
   function parseProb(text, format) {
     const t = String(text).trim().replace(/\s+/g, "").replace(/[−–]/g, "-");
     if (!t) return NaN;
     let m;
-    if ((m = /^([\d.]+(?:e-?\d+)?)%$/i.exec(t))) return +m[1] / 100;
+    if ((m = /^([\d.]+(?:e-?\d+)?)%$/i.exec(t))) return fromPercent(m[1]);
     if ((m = /^([\d.]+)\/([\d.]+)$/.exec(t))) return +m[2] > 0 ? +m[1] / +m[2] : NaN;
     if (format === "logodds") {
       if ((m = /^([+-]?)(?:inf|infinity|∞)$/i.exec(t))) return m[1] === "-" ? 0 : 1;
       return /^[+-]?[\d.]+(?:e[+-]?\d+)?$/i.test(t) && Number.isFinite(+t) ? sigmoid(+t) : NaN;
     }
     if (!/^[\d.]+(?:e-?\d+)?$/i.test(t)) return NaN;
-    return format === "pct" ? +t / 100 : +t;
+    return format === "pct" ? fromPercent(t) : +t;
+  }
+
+  // 1 - parseProb(text, format), computed from the typed digits rather than from the rounded
+  // probability, so typing 0.99999999999999999999 (which floating point stores as 1) leaves 1e-20
+  // for the rest of the row instead of 0. NaN when the text isn't a probability.
+  function parseComplement(text, format) {
+    const t = String(text).trim().replace(/\s+/g, "").replace(/[−–]/g, "-");
+    const dec = (x) => { // "12.5e-3" as [m, e]: m / 10^e exactly
+      const [mant, ex = "0"] = x.toLowerCase().split("e"), [i, f = ""] = mant.split(".");
+      let e = f.length - Number(ex), m = BigInt((i + f) || "0");
+      if (e < 0) { m *= M.pow10(-e); e = 0; }
+      return [m, e];
+    };
+    const minus = ([a, b], [c, d]) => { const e = Math.max(b, d); return [a * M.pow10(e - b) - c * M.pow10(e - d), e]; };
+    const toNum = ([m, e]) => (m < 0n ? -M.ratio(-m, M.pow10(e)) : M.ratio(m, M.pow10(e)));
+    const p = parseProb(text, format);
+    if (!(p >= 0)) return NaN;
+    let m;
+    if ((m = /^([\d.]+(?:e-?\d+)?)%$/i.exec(t))) return toNum(minus([100n, 0], dec(m[1]))) / 100;
+    if ((m = /^([\d.]+)\/([\d.]+)$/.exec(t))) { const a = dec(m[1]), b = dec(m[2]); const [n, e] = minus(b, a); return toNum([n, e]) / toNum(b); }
+    if (format === "logodds") return /inf|∞/i.test(t) ? 1 - p : sigmoid(-t);
+    return format === "pct" ? toNum(minus([100n, 0], dec(t))) / 100 : toNum(minus([1n, 0], dec(t)));
   }
 
   function createCptEditor(dock, opts) {
@@ -77,19 +102,30 @@
 
     const node = () => (nodeId == null ? null : M.getNode(opts.getNet(), nodeId));
     const card = () => node().labels.length;
-    const fmtLogit = (v) => {
-      const x = logit(v);
+    // `rest` is the sum of the row's other states, when known: log-odds are then ln(v / rest), which
+    // stays finite for a state of 1 - 1e-20 that floating point stores as 1 (the other state keeps
+    // the 1e-20), and a value that only rounds to 1 isn't shown as certain.
+    const logOdds = (v, rest) => (rest === undefined ? logit(v) : v <= 0 ? -Infinity : rest <= 0 ? Infinity : Math.log(v / rest));
+    const fmtLogit = (v, rest) => {
+      const x = logOdds(v, rest);
       return x === Infinity ? "+∞" : x === -Infinity ? "−∞" : (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x).toFixed(2);
+    };
+    const fmt = (v, format = prefs.format, rest) => {
+      if (!Number.isFinite(v)) return "?";
+      const notCertain = v < 1 || rest > 0;
+      if (format === "logodds") return v > 1 || v < 0 ? "?" : fmtLogit(v, rest);
+      if (format === "pct") {
+        if (v > 0 && v < 1e-4) return +(v * 100).toPrecision(3) + "%";
+        const t = +(v * 100).toFixed(2);
+        return t === 100 && notCertain ? ">99.99%" : t + "%";
+      }
+      if (v !== 0 && Math.abs(v) < 1e-4) return v.toExponential(1);
+      const t = +v.toFixed(4);
+      return t === 1 && notCertain ? ">0.9999" : String(t);
     };
     // log-odds cells name their probability on hover
     const cellTitle = (v) => (prefs.format === "logodds" && Number.isFinite(v) ? `${fmt(v, "pct")} (${M.fmtNum(v)})` : M.fmtNum(v));
-    const fmt = (v, format = prefs.format) => {
-      if (!Number.isFinite(v)) return "?";
-      if (format === "logodds") return v > 1 || v < 0 ? "?" : fmtLogit(v);
-      if (format === "pct") return +(v * 100).toFixed(2) + "%";
-      if (v !== 0 && Math.abs(v) < 1e-4) return v.toExponential(1);
-      return String(+v.toFixed(4));
-    };
+    const restOf = (vals, s) => vals.reduce((a, x, i) => (i === s ? a : a + Math.max(0, x)), 0);
     const rowVals = (r) => node().cpt.slice(rows[r].offset, rows[r].offset + card());
     const range = () => ({
       r0: Math.min(sel.ar, sel.fr), r1: Math.max(sel.ar, sel.fr),
@@ -239,7 +275,7 @@
         const pcells = parents.map((p, k) => spans[k][r]
           ? `<td class="pcell" rowspan="${spans[k][r]}" data-r="${r}" data-span="${spans[k][r]}" title="Select ${spans[k][r] > 1 ? "these rows" : "this row"}">${esc(p.labels[row.idx[k]])}</td>`
           : "").join("");
-        const cells = vals.map((v, s) => `<td class="cell" data-r="${r}" data-c="${s}" title="${esc(cellTitle(v))}">${fmt(v)}</td>`).join("");
+        const cells = vals.map((v, s) => `<td class="cell" data-r="${r}" data-c="${s}" title="${esc(cellTitle(v))}">${fmt(v, prefs.format, restOf(vals, s))}</td>`).join("");
         const cls = [rowBad(vals) && "bad", r > 0 && parents.length > 1 && spans[0][r] && "group-start", r % 2 && "odd"].filter(Boolean).join(" ");
         return `<tr data-r="${r}"${cls ? ` class="${cls}"` : ""}>${pcells}<td class="bar-cell"><div class="bar" data-row="${r}">${barHTML(vals)}</div></td>${cells}<td class="status">${statusHTML(vals)}</td></tr>`;
       }).join("");
@@ -310,7 +346,7 @@
       tr.querySelector(".bar").innerHTML = barHTML(vals);
       vals.forEach((v, s) => {
         const td = tr.querySelector(`td.cell[data-c="${s}"]`);
-        td.textContent = fmt(v);
+        td.textContent = fmt(v, prefs.format, restOf(vals, s));
         td.title = cellTitle(v);
       });
       tr.querySelector(".status").innerHTML = statusHTML(vals);
@@ -387,7 +423,8 @@
 
     // Sets one cell. With auto-balance, the row's other states absorb the difference, except
     // those already typed in this row, so typing all but one state of a row fills in the last.
-    function setValue(r, c, v) {
+    // `comp`, when known, is 1 - v computed exactly from what was typed (see parseComplement).
+    function setValue(r, c, v, comp = 1 - v) {
       const o = rows[r].offset;
       if (pins.offset !== o) pins = { offset: o, set: new Set() };
       editCpt(() => {
@@ -396,11 +433,11 @@
         if (!prefs.balance || k < 2) return;
         const others = [...Array(k).keys()].filter((s) => s !== c);
         let free = others.filter((s) => !pins.set.has(s));
-        let kept = v + sum(others.filter((s) => !free.includes(s)).map((s) => cpt[o + s]));
+        let pinned = sum(others.filter((s) => !free.includes(s)).map((s) => cpt[o + s]));
         // When the typed values no longer fit under 1 (or nothing is left to adjust), the new value
         // wins and every other state in the row is rescaled.
-        if (!free.length || kept > 1 + 1e-9) { free = others; kept = v; pins.set = new Set(); }
-        const rem = 1 - kept, cur = sum(free.map((s) => cpt[o + s]));
+        if (!free.length || v + pinned > 1 + 1e-9) { free = others; pinned = 0; pins.set = new Set(); }
+        const rem = comp - pinned, cur = sum(free.map((s) => cpt[o + s]));
         const before = free.map((s) => cpt[o + s]);
         for (const s of free) cpt[o + s] = round(rem <= 0 ? 0 : cur > 0 ? (cpt[o + s] * rem) / cur : rem / free.length);
         const changed = free.filter((s, i) => Math.abs(cpt[o + s] - before[i]) > 1e-12);
@@ -427,7 +464,7 @@
       const input = document.createElement("input");
       input.className = "cell-edit";
       input.inputMode = "decimal";
-      const x = logit(v);
+      const x = logOdds(v, restOf(rowVals(r), c));
       input.value = initial ?? (prefs.format === "pct" ? M.fmtNum(v * 100)
         : prefs.format === "logodds" ? (x === Infinity ? "inf" : x === -Infinity ? "-inf" : M.fmtNum(+x.toPrecision(12))) : M.fmtNum(v));
       td.textContent = "";
@@ -460,9 +497,13 @@
         grid.focus({ preventScroll: true });
         return false;
       }
-      const old = node().cpt[rows[r].offset + c];
-      if (Math.abs(old - v) < 1e-15) render(nodeId);
-      else setValue(r, c, v);
+      const old = node().cpt[rows[r].offset + c], comp = parseComplement(input.value, prefs.format);
+      // Unchanged up to the 12 digits the edit box shows. Relative, so 1e-20 → 3e-20 is a change, and
+      // with auto-sum the rest of the row counts too: typing 1 - 1e-20 over a 1 (the same number in
+      // floating point) still changes the other states to 1e-20.
+      const same = (a, b) => Math.abs(a - b) <= 1e-11 * Math.max(a, b);
+      if (same(old, v) && (!prefs.balance || card() < 2 || !(comp >= 0) || same(restOf(rowVals(r), c), comp))) render(nodeId);
+      else setValue(r, c, v, comp >= 0 ? comp : undefined);
       grid.focus({ preventScroll: true });
       return true;
     }
