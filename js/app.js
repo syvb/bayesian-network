@@ -604,10 +604,20 @@
     localStorage.setItem(PROBS_KEY, showProbs ? "1" : "0");
     document.querySelector('[data-action="probs"]').setAttribute("aria-pressed", showProbs);
     render();
+    schedulePanel();
     if (!inline.hidden) positionInline();
   }
 
   const fmtPct = (q) => +(q * 100).toPrecision(3) + "%";
+  // What clicking a state does in the current mode, for the side panel (and the viewer).
+  function clickModeText() {
+    return clickMode === "intervene"
+      ? "Click a state to make it true from outside, do(node = state): the arcs into the node are cut, so you see only its effects, not what its causes would imply."
+      : softMode
+      ? "Click a state in any node to enter soft evidence (probabilities or likelihoods) for that node."
+      : "Click a state in any node to observe it; every other node then shows its updated probabilities.";
+  }
+
   function clickHint() {
     return clickMode === "intervene" ? "Click a state to set it by intervention, do(node = state)"
       : softMode ? "Click a state to enter soft evidence for this node" : "Click a state to set or clear it as evidence";
@@ -632,11 +642,8 @@
     if (inf.error) {
       body = `<span class="warn">${esc(inf.error)}</span>`;
     } else if (!ev.size) {
-      body = `<span class="muted ev-hint">${clickMode === "intervene"
-        ? "Click a state to make it true from outside, do(node = state): the arcs into the node are cut, so you see only its effects, not what its causes would imply."
-        : softMode
-        ? "Click a state in any node to enter soft evidence (probabilities or likelihoods) for that node."
-        : "Click a state in any node to observe it; every other node then shows its updated probabilities."}</span>`;
+      // The editor explains clicking states in the side panel; the viewer has no side panel.
+      body = viewer ? `<span class="muted ev-hint">${clickModeText()}</span>` : "";
     } else {
       const chip = ([id, v]) => {
         const n = M.getNode(net, id);
@@ -655,7 +662,7 @@
         (onlyTargets(ev) ? "" : `<span class="muted" title="Probability of all the observations together, before observing them${[...ev.values()].some(isDo) ? ", given the interventions" : ""}${[...ev.values()].some(isTarget) ? " (probabilities you set directly aren't observations, so they aren't included)" : ""}">P(evidence) = ${fmtP(inf.pEvidence)}</span>`) +
         `<button class="small" data-clear-ev="all">Clear all</button>`;
     }
-    evidenceBar.innerHTML = body + `<span class="sep"></span>` + modes + toggle;
+    evidenceBar.innerHTML = (body ? body + `<span class="sep"></span>` : "") + modes + toggle;
   }
   evidenceBar.addEventListener("click", (e) => {
     const m = e.target.closest("[data-click-mode]");
@@ -664,6 +671,7 @@
       localStorage.setItem(CLICK_KEY, clickMode);
       if (clickMode === "intervene") closeSoftEditor();
       render();
+      schedulePanel();
       return;
     }
     const b = e.target.closest("[data-clear-ev]");
@@ -684,6 +692,7 @@
     localStorage.setItem(SOFT_KEY, softMode ? "1" : "0");
     if (!softMode) closeSoftEditor();
     render();
+    schedulePanel();
   });
 
   // ------------------------------------------------------------ soft evidence editor
@@ -1193,6 +1202,7 @@
       <div class="field"><label for="net-name">Name</label><input id="net-name" type="text" value="${esc(net.name)}"></div>
       <p class="muted">A Bayesian network with ${net.nodes.length} variables and ${net.arcs.length} arcs.</p>
       ${bad.length ? `<h3>Problems</h3><ul class="warn">${bad.map((n) => `<li><span class="link" data-select="${n.id}">${esc(n.name)}</span>: CPT rows do not sum to 1</li>`).join("")}</ul>` : ""}
+      ${showProbs && net.nodes.length ? `<p class="click-mode-help${clickMode === "intervene" ? " intervene" : ""}">${clickModeText()}</p>` : ""}
       <h3>Editing</h3>
       <dl class="help">
         <dt>Add a node</dt><dd>Double-click empty space, or press <kbd>N</kbd>. Type its name and press <kbd>Enter</kbd>.</dd>

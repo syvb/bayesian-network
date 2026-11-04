@@ -650,3 +650,5 @@ body.embedded.viewer .toolbar .brand { display: none; }
 .ev-chip.do { background: color-mix(in srgb, var(--intervened) 15%, transparent); }
 #evidence-bar .click-label { white-space: nowrap; }
 #evidence-bar .seg-toggle button.on[data-click-mode="intervene"] { border-color: var(--intervened); background: color-mix(in srgb, var(--intervened) 15%, transparent); }
+.click-mode-help { margin: 12px 0 0; padding: 8px 11px; border-radius: 8px; font-size: 13px; line-height: 1.45; background: var(--accent-soft); }
+.click-mode-help.intervene { background: color-mix(in srgb, var(--intervened) 13%, transparent); }
