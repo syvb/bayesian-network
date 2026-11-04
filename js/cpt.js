@@ -15,10 +15,8 @@
   // palette colours, so a colour never suggests a meaning the label doesn't have.
   const GREEN = PALETTE[2], RED = PALETTE[3];
   const OTHER = PALETTE.filter((c) => c !== GREEN && c !== RED);
-  const TRUTHY = new Set(["yes", "y", "true", "t", "on", "present", "positive", "pos", "success", "pass"]);
-  const FALSY = new Set(["no", "n", "false", "f", "off", "absent", "negative", "neg", "none", "failure", "fail"]);
   function stateColors(labels) {
-    const kind = labels.map((l) => { const k = String(l).trim().toLowerCase(); return TRUTHY.has(k) ? GREEN : FALSY.has(k) ? RED : null; });
+    const kind = labels.map((l) => (M.isTrueLabel(l) ? GREEN : M.isFalseLabel(l) ? RED : null));
     let i = 0;
     return kind.map((c) => c || OTHER[i++ % OTHER.length]);
   }
@@ -173,6 +171,7 @@
       const given = parents.length ? ` <span class="given">|</span> ${parents.map((p) => esc(p.name)).join(", ")}` : "";
       return `
         <span class="dock-title">P(<b>${esc(n.name)}</b>${given})</span>
+        ${n.gate ? `<span class="dock-gate" title="Computed from the parents; editing a cell turns this into an ordinary table">${n.gate.toUpperCase()} of parents</span>` : ""}
         <span class="dock-status${bad ? " bad" : ""}">${bad
           ? `${bad} of ${total} row${total > 1 ? "s" : ""} ${bad > 1 ? "don't" : "doesn't"} sum to 1 · <button class="linkish" data-cpt="fix-all">Normalize ${bad > 1 ? "them" : "it"}</button>`
           : `<span title="${total > 1 ? `All ${total} rows sum` : "Sums"} to 1">✓<span class="full-only"> ${total > 1 ? `All ${total} rows sum` : "Sums"} to 1</span></span>`}</span>
@@ -363,8 +362,24 @@
 
     // ------------------------------------------------------------ edits
 
-    function mutateRows(offsets, fn) {
+    // Editing a logic gate's table makes it an ordinary table (so you can, say, add a leak).
+    function ungate() {
+      const n = node();
+      if (!n.gate) return;
+      opts.toast(`${n.name} is now an ordinary table rather than ${n.gate === "and" ? "an AND" : "an OR"} of its parents`);
+      delete n.gate;
+    }
+    // One undoable CPT edit; a gate whose values it changes stops being a gate.
+    function editCpt(fn) {
       opts.change(() => {
+        const before = node().cpt.join();
+        fn();
+        if (node().cpt.join() !== before) ungate();
+      });
+    }
+
+    function mutateRows(offsets, fn) {
+      editCpt(() => {
         const n = node(), c = n.labels.length;
         for (const o of offsets) fn(n.cpt, o, c);
       });
@@ -375,7 +390,7 @@
     function setValue(r, c, v) {
       const o = rows[r].offset;
       if (pins.offset !== o) pins = { offset: o, set: new Set() };
-      opts.change(() => {
+      editCpt(() => {
         const cpt = node().cpt, k = card();
         cpt[o + c] = v;
         if (!prefs.balance || k < 2) return;
@@ -395,7 +410,7 @@
     }
 
     function setBlock(r0, c0, matrix) {
-      opts.change(() => {
+      editCpt(() => {
         const cpt = node().cpt;
         matrix.forEach((line, i) => line.forEach((v, j) => {
           if (r0 + i < rows.length && c0 + j < card()) cpt[rows[r0 + i].offset + c0 + j] = v;
@@ -640,7 +655,7 @@
       const start = i > 0 ? d.cum[i - 1] : 0, end = d.cum[i + 1];
       const step = e.shiftKey ? 0.001 : 0.01;
       b = Math.max(start, Math.min(end, Math.round(b / step) * step));
-      if (!d.started) { opts.checkpoint(); d.started = true; }
+      if (!d.started) { opts.checkpoint(); ungate(); d.started = true; }
       const cpt = node().cpt, o = rows[d.r].offset;
       cpt[o + i] = round(b - start);
       cpt[o + i + 1] = round(end - b);

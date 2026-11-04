@@ -271,6 +271,9 @@
   function change(fn) {
     const before = JSON.stringify(net), labels = labelsById();
     const result = fn();
+    // Logic-gate CPTs follow the change: new or removed parents, renamed or reordered states.
+    const dropped = M.applyGates(net);
+    if (dropped.length) toast(`${dropped.join(", ")} ${dropped.length > 1 ? "are" : "is"} no longer an AND/OR gate: a gate needs exactly two states. ${dropped.length > 1 ? "Their tables were" : "Its table was"} kept.`);
     if (JSON.stringify(net) !== before) checkpoint(before);
     remapEvidence(labels);
     refresh();
@@ -532,6 +535,7 @@
           `<rect class="body" x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}" rx="9"/>` +
           content +
           (bad ? `<circle class="bad" cx="${w / 2 - 8}" cy="${-h / 2 + 8}" r="4"/>` : "") +
+          (n.gate ? `<text class="gate" x="${w / 2 - 7}" y="${-h / 2 + 12}" text-anchor="end">${n.gate.toUpperCase()}</text>` : "") +
           (n.description ? `<g class="info" transform="translate(${-w / 2 + 10},${-h / 2 + 10})"><circle r="6"/><text text-anchor="middle" y="3.5">i</text></g>` : "") +
           `<circle class="port" data-port="${n.id}" cx="0" cy="${h / 2}" r="6"/>` +
         `</g>`
@@ -1475,7 +1479,17 @@
       <h3>Children</h3>
       <div class="chips">${children.map((c) => chip(c, "child")).join("") || '<span class="muted">None</span>'}</div>
       <h3>CPT</h3>
-      <p class="muted">Edit this variable's CPT in the table below the canvas (press <kbd>C</kbd> to jump there).</p>
+      <div class="seg-toggle" role="group" aria-label="How the CPT is set">
+        ${[["", "Table", "Set the probabilities yourself in the table below the canvas"],
+           ["and", "AND", "True exactly when every parent is true"],
+           ["or", "OR", "True when at least one parent is true"]]
+          .map(([g, l, t]) => `<button class="small${(n.gate || "") === g ? " on" : ""}" data-gate="${g}" title="${t}"${g && n.labels.length !== 2 ? " disabled" : ""}>${l}</button>`).join("")}
+      </div>
+      <p class="muted">${n.gate
+        ? `${esc(n.name)} is <b>${esc(n.labels[M.trueState(n.labels)])}</b> when ${n.gate === "and" ? "all" : "any"} of its parents ${n.gate === "and" ? "are" : "is"} true, otherwise <b>${esc(n.labels[1 - M.trueState(n.labels)])}</b>. A parent counts as true in its ${parents.length ? parents.map((p) => `<b>${esc(p.labels[M.trueState(p.labels)])}</b>`).filter((x, i, a) => a.indexOf(x) === i).join(" / ") : "yes / true / first"} state. The table updates as you add parents; editing it turns this back into an ordinary table.`
+        : n.labels.length === 2
+          ? `Edit this variable's CPT in the table below the canvas (press <kbd>C</kbd> to jump there), or make it an AND or OR of its parents.`
+          : `Edit this variable's CPT in the table below the canvas (press <kbd>C</kbd> to jump there). AND and OR need a variable with two states.`}</p>
       <p style="margin-top:16px"><button class="danger" data-act="delete">Delete variable</button></p>`;
 
     const name = panel.querySelector("#n-name");
@@ -1544,6 +1558,9 @@
     }));
     panel.querySelector('[data-act="delete"]').onclick = deleteSelection;
     panel.querySelector('[data-act="watch"]').onclick = () => toggleWatch([n.id]);
+    panel.querySelectorAll("[data-gate]").forEach((b) => (b.onclick = () => change(() => {
+      if (b.dataset.gate) n.gate = b.dataset.gate; else delete n.gate;
+    })));
 
     // Reordering parents: drag a chip before or after another, or Alt+←/→ on a focused chip.
     const order = parents.map((p) => p.id);

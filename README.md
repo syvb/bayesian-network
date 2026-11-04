@@ -19,6 +19,7 @@ It is a static site with no build step: serve the directory with any static file
   - `Ctrl+C` / `Ctrl+V` work with Excel and Google Sheets. Pasting a smaller block into a larger selection repeats it, so you can copy one row and paste it into many. `Ctrl+D` fills down and `Delete` sets cells to 0.
   - Click a parent cell to select all the rows under it, or a state header to select its column. Filters in the parent headers narrow down large tables.
   - Normalize, Uniform and Random apply to the selected rows (or all rows). Rows that do not sum to 1 are flagged, with a one-click fix.
+- **AND / OR nodes:** for a variable with two states, choose **AND** or **OR** under CPT in the side panel. Its table is then computed from its parents (true when all / any of them are true) and kept up to date as you add, remove or reorder parents. A parent counts as true in its yes / true / on / present state (or `1`, or else its first state). Editing the table turns it back into an ordinary one, for example to add a leak, and the export writes the table out in full, so pyAgrum sees an ordinary CPT. pyAgrum's `addAND` / `addOR` import as gates when they mean the same thing.
 - **Select / move:** click a node; `Ctrl`-click adds to the selection; `Shift`-drag on empty space draws a selection box. Drag to move, or nudge with the arrow keys.
 - **Delete / duplicate / undo:** `Del`, `Ctrl+D`, `Ctrl+Z` / `Ctrl+Shift+Z`.
 - **View:** drag empty space to pan, scroll to zoom, `F` to fit.

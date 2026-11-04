@@ -273,6 +273,7 @@
     const marginal = (a) => { const keep = a.get(from); let t = 0; for (let f = 0; f < nf.labels.length; f++) { a.set(from, f); t += joint(a); } a.set(from, keep); return t; };
     nt.cpt = cells(to, (a) => { a.set(from, 0); return marginal(a); });
     nf.cpt = cells(from, (a) => { const m = marginal(a); return m > 0 ? joint(a) / m : 1 / nf.labels.length; });
+    delete nf.gate; delete nt.gate; // their CPTs now come from Bayes' rule, not the gate
     return null;
   }
 
@@ -601,11 +602,58 @@
     return { pos, w: x1 - x0, h: top - V_GAP };
   }
 
+  // ------------------------------------------------------------ logic gates
+
+  // A node with gate "and" or "or" has a deterministic CPT computed from its parents: it is true
+  // when all (AND) or any (OR) of them are true, and is recomputed whenever the network changes.
+  const TRUTHY = new Set(["yes", "y", "true", "t", "on", "present", "positive", "pos", "success", "pass"]);
+  const FALSY = new Set(["no", "n", "false", "f", "off", "absent", "negative", "neg", "none", "failure", "fail"]);
+  const norm = (l) => String(l).trim().toLowerCase();
+  const isTrueLabel = (l) => TRUTHY.has(norm(l));
+  const isFalseLabel = (l) => FALSY.has(norm(l));
+  const GATES = ["and", "or"];
+
+  // The state that counts as true: the one labelled yes / true / present..., else the other state
+  // of a two-state variable whose state is labelled no / false..., else "1" of a 0/1 variable,
+  // else the first state.
+  function trueState(labels) {
+    if (labels.length === 2 && labels.includes("0") && labels.includes("1")) return labels.indexOf("1");
+    const i = labels.findIndex(isTrueLabel);
+    if (i >= 0) return i;
+    const j = labels.findIndex(isFalseLabel);
+    return labels.length === 2 && j >= 0 ? 1 - j : 0;
+  }
+
+  function gateCpt(net, id) {
+    const n = getNode(net, id), t = trueState(n.labels);
+    const { parents, rows } = cptRows(net, id);
+    const pt = parents.map((p) => trueState(p.labels));
+    const cpt = new Array(rows.length * 2);
+    for (const r of rows) {
+      const on = n.gate === "and" ? r.idx.every((s, k) => s === pt[k]) : r.idx.some((s, k) => s === pt[k]);
+      cpt[r.offset + t] = on ? 1 : 0;
+      cpt[r.offset + 1 - t] = on ? 0 : 1;
+    }
+    return cpt;
+  }
+
+  // Recomputes every gate node's CPT. A gate on a variable that no longer has two states is
+  // dropped (its table stays as remapped); returns the names of those variables.
+  function applyGates(net) {
+    const dropped = [];
+    for (const n of net.nodes) {
+      if (!n.gate) continue;
+      if (n.labels.length !== 2 || !GATES.includes(n.gate)) { delete n.gate; dropped.push(n.name); continue; }
+      n.cpt = gateCpt(net, n.id);
+    }
+    return dropped;
+  }
+
   const api = {
     TYPES, fmtNum, labelsFor, createNetwork, getNode, nodeByName, parentsOf, childrenOf, card, uniqueName, setParentOrder,
     addNode, setDomain, uniformCpt, wouldCycle, hasArc, stateMap, restructure, addArc, removeArc, reverseArc,
     removeNode, updateDomain, cptRows, normalizeRow, normalizeCpt, randomizeCpt, uniformizeCpt, badRows,
-    autoLayout, strides,
+    autoLayout, strides, GATES, isTrueLabel, isFalseLabel, trueState, gateCpt, applyGates,
   };
   globalThis.BNModel = api;
 })();

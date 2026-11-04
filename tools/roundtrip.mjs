@@ -5,7 +5,7 @@ import fs from "node:fs";
 import { M, P, demos } from "./load.mjs";
 
 const sig = (net) => JSON.stringify(net.nodes.map((n) => [
-  n.name, n.type, n.description, n.labels, n.min, n.max, n.values, n.ticks, Math.round(n.x), Math.round(n.y),
+  n.name, n.type, n.description, n.gate, n.labels, n.min, n.max, n.values, n.ticks, Math.round(n.x), Math.round(n.y),
   M.parentsOf(net, n.id).map((id) => M.getNode(net, id).name), n.cpt.map((v) => +v.toPrecision(12)),
 ]));
 

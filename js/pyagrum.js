@@ -5,6 +5,7 @@
   const LAYOUT_TAG = "# bn-editor-layout:";
   const WATCH_TAG = "# bn-editor-watch:";
   const EVIDENCE_TAG = "# bn-editor-evidence:";
+  const GATES_TAG = "# bn-editor-gates:";
 
   // ---------------------------------------------------------------- export
 
@@ -46,6 +47,9 @@
     out.push("", "# Node positions for the visual editor (ignored by pyAgrum).", LAYOUT_TAG + " " + JSON.stringify(layout));
     const watched = (net.watch || []).map((id) => M.getNode(net, id)).filter(Boolean).map((n) => n.name);
     if (watched.length) out.push("# Nodes pinned to the editor's watch panel.", WATCH_TAG + " " + JSON.stringify(watched));
+    const gates = {};
+    for (const n of net.nodes) if (n.gate) gates[n.name] = n.gate;
+    if (Object.keys(gates).length) out.push("# Variables whose CPT the editor computes as an AND or OR of their parents (the tables above).", GATES_TAG + " " + JSON.stringify(gates));
     if (evidence.size) out.push("", ...evidenceCode(net, evidence));
     out.push("");
     return out.join("\n");
@@ -768,13 +772,13 @@
       }
     }
 
-    let layout = null, evidence = null, watch = null;
+    let layout = null, evidence = null, watch = null, gates = null;
     for (const c of result.comments) {
-      const tag = [LAYOUT_TAG, EVIDENCE_TAG, WATCH_TAG].find((t) => c.text.startsWith(t));
+      const tag = [LAYOUT_TAG, EVIDENCE_TAG, WATCH_TAG, GATES_TAG].find((t) => c.text.startsWith(t));
       if (!tag) continue;
       let value;
-      try { value = JSON.parse(c.text.slice(tag.length)); } catch { lineWarnings.push(`${lineLabel(c.line)}: could not read the ${tag === LAYOUT_TAG ? "layout" : tag === WATCH_TAG ? "watch" : "evidence"} comment`); continue; }
-      if (tag === LAYOUT_TAG) layout = value; else if (tag === WATCH_TAG) watch = value; else evidence = value;
+      try { value = JSON.parse(c.text.slice(tag.length)); } catch { lineWarnings.push(`${lineLabel(c.line)}: could not read the ${tag === LAYOUT_TAG ? "layout" : tag === WATCH_TAG ? "watch" : tag === GATES_TAG ? "gates" : "evidence"} comment`); continue; }
+      if (tag === LAYOUT_TAG) layout = value; else if (tag === WATCH_TAG) watch = value; else if (tag === GATES_TAG) gates = value; else evidence = value;
     }
 
     for (const what of otherModels) warnings.unshift(`This script builds ${what}, which the editor doesn't support (only Bayesian networks)`);
@@ -798,7 +802,29 @@
     const net = bn.net;
     const random = net.nodes.filter((n) => untouched.has(n));
     if (random.length) warnings.push(`${random.length === net.nodes.length ? "All CPTs were" : `The CPT${random.length > 1 ? "s" : ""} of ${nameList(random.map((n) => n.name))} ${random.length > 1 ? "were" : "was"}`} left random by fastBN, so ${random.length > 1 ? "they" : "it"} won't match pyAgrum's random values`);
-    const kept = converted.filter((c) => net.nodes.some((n) => c.startsWith(n.name + " (")));
+    // A variable becomes an editor AND/OR gate when the comment (or pyAgrum's addAND / addOR) says
+    // so and its imported table is exactly that gate's; the table itself always comes from the script.
+    const asGate = (n, gate) => {
+      if (!M.GATES.includes(gate) || n.labels.length !== 2) return false;
+      n.gate = gate;
+      const want = M.gateCpt(net, n.id);
+      if (want.every((v, i) => v === n.cpt[i])) return true;
+      delete n.gate;
+      return false;
+    };
+    const gated = new Set();
+    if (gates && typeof gates === "object") {
+      for (const [name, gate] of Object.entries(gates)) {
+        const n = M.nodeByName(net, name);
+        if (n && asGate(n, gate)) gated.add(n.name);
+        else if (n) lineWarnings.push(`${name}: its table isn't ${gate === "and" ? "an AND" : "an OR"} of its parents, so it stays an ordinary table`);
+      }
+    }
+    for (const n of net.nodes) {
+      const kind = generated.get(n)?.kind;
+      if ((kind === "AND" || kind === "OR") && !n.gate && asGate(n, kind.toLowerCase())) gated.add(n.name);
+    }
+    const kept = converted.filter((c) => net.nodes.some((n) => !gated.has(n.name) && c.startsWith(n.name + " (")));
     if (kept.length) warnings.push(`Aggregator and noisy-gate nodes became plain CPTs: ${nameList(kept)}`);
     if (randomCpts) warnings.push("The script builds the network with random numbers, so the values differ from a run in Python");
     // A CPT that isn't a distribution in every row isn't a Bayesian network, and making one up
