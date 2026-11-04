@@ -106,7 +106,15 @@
   // Import runs the script in MiniPy (js/python.js), a sandboxed Python interpreter written in
   // JavaScript, with the pyAgrum objects below standing in for the real library.
   const Py = globalThis.MiniPy;
-  const { PyError, HostObject, Opaque, Builtin, NdArray, PyDict, Slice, tuple, isTuple, flatten, iterate, toNumber } = Py;
+  const { PyError, UnsupportedError, HostObject, Opaque, Builtin, NdArray, PyDict, Slice, tuple, isTuple, flatten, iterate, toNumber } = Py;
+  // pyAgrum's gum.VarType values, as returned by variable.varType()
+  const VAR_TYPES = { discretized: 0, labelized: 1, integer: 2, numerical: 3, range: 4 };
+  // BayesNet methods that only read the network, which the importer doesn't compute: they give
+  // inert stand-ins, so code that displays or saves results runs. Any other method the importer
+  // doesn't know might change the network, so it stops the import.
+  const BN_READ_ONLY = new Set(["toDot", "dim", "log10DomainSize", "check", "ids", "family", "isIndependent", "jointProbability",
+    "log2JointProbability", "completeInstantiation", "properties", "dag", "moralGraph", "connectedComponents", "minimalCondSet",
+    "moralizedAncestralGraph", "spaceCplxty", "memoryFootprint", "toFast", "loadBIFasNet", "__str__", "__repr__", "_repr_html_"]);
   const fn = (name, f) => new Builtin(name, f);
 
   // Other model kinds pyAgrum offers; the editor only handles Bayesian networks.
@@ -195,7 +203,7 @@
         case "numerical": return fn(name, ([i]) => numericValue(s, toNumber(i)));
         case "isLabel": return fn(name, ([l]) => s.labels.includes(String(l)));
         case "toStringWithDescription": return fn(name, () => varStr(s));
-        case "varType": return fn(name, () => s.type);
+        case "varType": return fn(name, () => VAR_TYPES[s.numerical || numerical.has(s) ? "numerical" : s.type]);
         case "minVal": return fn(name, () => numericValue(s, 0));
         case "maxVal": return fn(name, () => numericValue(s, s.labels.length - 1));
         case "ticks": return fn(name, () => tuple((s.ticks || []).slice()));
@@ -212,6 +220,21 @@
         case "discretized": return (s.ticks[i] + s.ticks[i + 1]) / 2;
       }
       return s.numerical || numerical.has(s) ? Number(s.labels[i]) : i;
+    }
+
+    // The state pyAgrum gives a number in fillFromFunction: the interval containing it for a
+    // discretized variable (clamped to the first and last intervals), otherwise the nearest value,
+    // the lower one on a tie.
+    function stateOfValue(node, vals, v) {
+      if (!Number.isFinite(v)) throw new PyError(`fillFromFunction(): the formula gave ${v} for ${node.name}`);
+      if (node.type === "discretized") {
+        let i = 0;
+        while (i < node.ticks.length - 2 && v >= node.ticks[i + 1]) i++;
+        return i;
+      }
+      let best = 0;
+      for (let s = 1; s < vals.length; s++) if (Math.abs(vals[s] - v) < Math.abs(vals[best] - v)) best = s;
+      return best;
     }
 
     function varSpec(type, args, kwargs) {
@@ -272,6 +295,11 @@
       return s;
     }
 
+    // A name or label made from a value the importer doesn't compute would be made up.
+    function checkText(t) {
+      if (String(t).includes(Py.OPAQUE_MARK)) throw new UnsupportedError(`A name or state label comes from ${String(t).replaceAll(Py.OPAQUE_MARK, "")}, which the importer doesn't compute`);
+    }
+
     function makeBN(name) {
       const bn = new BNHost(M.createNetwork(name), []);
       bns.push(bn);
@@ -284,7 +312,7 @@
       str() { return `BN{nodes: ${this.net.nodes.length}, arcs: ${this.net.arcs.length}}`; }
       len() { return this.net.nodes.length; }
       iter() { return this.liveIds(); }
-      liveIds() { return this.pyIds.map((x, i) => (x === null ? null : i)).filter((x) => x !== null); }
+      liveIds() { return this.pyIds.map((x, i) => (x == null ? null : i)).filter((x) => x !== null); }
       node(v) {
         let node;
         if (typeof v === "number") node = this.pyIds[v] != null ? M.getNode(this.net, this.pyIds[v]) : null;
@@ -294,15 +322,26 @@
         return node;
       }
       pyId(node) { return this.pyIds.indexOf(node.id); }
-      add(spec) {
+      // id: the node id the script asks for, as in bn.add(var, 5)
+      add(spec, id) {
+        if (id !== undefined && id !== null && !(Number.isInteger(id) && id >= 0)) throw new PyError("bn.add(): the node id must be a nonnegative integer");
+        if (id !== undefined && id !== null && this.pyIds[id] != null) throw new PyError(`DuplicateElement: Unable to insert a new variable with id ${id}`);
+        // pyAgrum reuses free ids below the highest one; with several, which one it takes isn't
+        // something the importer follows
+        const free = [];
+        for (let i = 0; i < this.pyIds.length; i++) if (this.pyIds[i] == null) free.push(i);
+        if ((id === undefined || id === null) && free.length > 1) throw new UnsupportedError("Adding a variable without an id after ids were skipped or erased isn't supported (pyAgrum's choice of id isn't followed); give every variable an explicit id");
         if (M.nodeByName(this.net, spec.name)) throw new PyError(`A variable named ${JSON.stringify(spec.name)} already exists`);
+        checkText(spec.name);
+        spec.labels.forEach(checkText);
         if (!spec.labels.length) throw new PyError(`Variable ${JSON.stringify(spec.name)} has no states`);
         if (spec.labels.length > 1e5) throw new PyError(`Variable ${JSON.stringify(spec.name)} has too many states (${spec.labels.length})`);
         const node = M.addNode(this.net, spec);
         node.cpt.fill(0); // like pyAgrum, CPT cells start at 0 until the script fills them
         if (spec.numerical) numerical.add(node);
-        this.pyIds.push(node.id);
-        return this.pyIds.length - 1;
+        const pid = id ?? (free.length ? free[0] : this.pyIds.length);
+        this.pyIds[pid] = node.id;
+        return pid;
       }
       arc(a, b) {
         const child = this.node(b);
@@ -319,8 +358,8 @@
         const net = this.net;
         const names = (ids) => ids.map((id) => M.getNode(net, id).name);
         switch (name) {
-          case "add": return fn(name, ([v, n]) => {
-            if (v instanceof VarHost || v instanceof VarView) return this.add(structuredClone(v.spec));
+          case "add": return fn(name, ([v, n], kw) => {
+            if (v instanceof VarHost || v instanceof VarView) return this.add(structuredClone(v.spec), n ?? kw.get("id"));
             if (typeof v === "string") {
               const spec = { name: v, description: v, type: "range", min: 0, max: (n ?? 2) - 1 };
               spec.labels = M.labelsFor(spec);
@@ -353,6 +392,7 @@
           case "changeVariableName": return fn(name, ([v, n]) => {
             const node = this.node(v);
             if (M.nodeByName(net, String(n)) && node.name !== String(n)) throw new PyError(`A variable named ${JSON.stringify(n)} already exists`);
+            checkText(n);
             node.name = String(n);
             return null;
           });
@@ -361,10 +401,11 @@
             if (node.type !== "labelized") throw new PyError(`${node.name} is not a LabelizedVariable`);
             const i = node.labels.indexOf(String(oldL));
             if (i < 0) throw new PyError(`${JSON.stringify(oldL)} is not a state of ${node.name}`);
+            checkText(newL);
             node.labels[i] = String(newL);
             return null;
           });
-          case "setProperty": return fn(name, ([k, v]) => { if (k === "name") net.name = String(v); return null; });
+          case "setProperty": return fn(name, ([k, v]) => { if (k === "name") { checkText(v); net.name = String(v); } return null; });
           case "property": return fn(name, ([k]) => (k === "name" ? net.name : ""));
           case "setName": return fn(name, ([n]) => { net.name = String(n); return null; });
           case "generateCPTs": return fn(name, () => { for (const n of net.nodes) { M.randomizeCpt(n); untouched.add(n); } return null; });
@@ -390,10 +431,14 @@
             gen.weights.set(this.node(a).id, toNumber(w));
             return null;
           });
-          case "saveBIF": case "saveDSL": case "saveNET": case "saveUAI": case "saveO3PRM": case "saveBIFXML": case "loadBIF": case "loadDSL":
+          case "clear": return fn(name, () => { net.nodes = []; net.arcs = []; this.pyIds.length = 0; return null; });
+          case "saveBIF": case "saveDSL": case "saveNET": case "saveUAI": case "saveO3PRM": case "saveBIFXML":
             return fn(name, () => null);
+          case "loadBIF": case "loadDSL": case "loadNET": case "loadUAI": case "loadBIFXML": case "loadO3PRM":
+            return fn(name, () => { throw new UnsupportedError(`bn.${name}(): reading network files isn't possible here; build the network in code instead`); });
         }
-        return new Opaque(`bn.${name}`);
+        if (BN_READ_ONLY.has(name)) return new Opaque(`bn.${name}`);
+        throw new UnsupportedError(`bn.${name}() isn't supported by the importer, and it might change the network`);
       }
     }
 
@@ -411,8 +456,19 @@
       vars() { return [this.node.id].concat(M.parentsOf(this.bn.net, this.node.id)).map((id) => M.getNode(this.bn.net, id)); }
       str() { return `<CPT of ${this.node.name}>`; }
       len() { return this.vars().at(-1).labels.length; }
-      binop() { throw new PyError("Arithmetic on CPTs is not supported"); }
+      binop() { throw new UnsupportedError("Arithmetic on CPTs is not supported"); }
       touched() { untouched.delete(this.node); }
+      // The CPT's current values. An aggregator's or noisy gate's is computed from its parents
+      // as they are now, as pyAgrum does.
+      values() {
+        const gen = generated.get(this.node);
+        return gen ? generatedCpt(this.bn.net, this.node, gen, numericValue) : this.node.cpt;
+      }
+      // pyAgrum refuses to write to an aggregator's or noisy gate's CPT.
+      writable() {
+        if (generated.has(this.node)) throw new PyError(`OperationNotAllowed: Write access to an aggregator (the CPT of ${this.node.name} is computed from its parents)`);
+        modelChanged = true;
+      }
 
       // For each variable position, the selected state indices (null = all). Positions fixed by
       // an integer or a dict key are listed in sel.drop: like numpy, they don't appear in reads.
@@ -476,7 +532,8 @@
 
       assign(sel, value) {
         const { offs } = this.cells(sel);
-        const vals = value instanceof PotHost ? value.node.cpt.slice() : flatten(value instanceof NdArray ? value.data : value);
+        this.writable();
+        const vals = value instanceof PotHost ? value.values().slice() : flatten(value instanceof NdArray ? value.data : value);
         if (vals.some((v) => !(typeof v === "number" || typeof v === "boolean"))) throw new PyError(`CPT values must be numbers (got ${Py.typeName(vals.find((v) => typeof v !== "number"))})`);
         if (!vals.length || offs.length % vals.length) throw new PyError(`Cannot put ${vals.length} values into ${offs.length} cells of the CPT of ${this.node.name}`);
         offs.forEach((o, i) => { this.node.cpt[o] = +vals[i % vals.length]; });
@@ -485,7 +542,8 @@
 
       read(sel) {
         const { offs, shape } = this.cells(sel);
-        const vals = offs.map((o) => this.node.cpt[o]);
+        const cpt = this.values();
+        const vals = offs.map((o) => cpt[o]);
         if (!shape.length) return vals[0];
         const build = (off, dims) => {
           if (!dims.length) return vals[off];
@@ -498,25 +556,40 @@
       }
 
       getitem(key) { return this.read(this.select(key)); }
-      setitem(key, value) { modelChanged = true; this.assign(this.select(key), value); }
+      setitem(key, value) { this.assign(this.select(key), value); }
 
-      fillFrom(other) {
+      // Copies other's values, matching variables by name, as pyAgrum does. mapping renames them:
+      // a dict {my variable: its variable}, or a list giving, for each of other's variables in
+      // order, the name of mine it stands for.
+      fillFrom(other, mapping) {
         const mine = this.vars(), theirs = other.vars();
-        const same = mine.length === theirs.length && mine.every((n) => theirs.some((t) => t.name === n.name && t.labels.length === n.labels.length));
-        if (!same) {
-          if (other.node.cpt.length !== this.node.cpt.length) throw new PyError(`The CPTs of ${this.node.name} and ${other.node.name} have different variables`);
-          this.node.cpt = other.node.cpt.slice();
-          return;
+        const theirName = new Map(mine.map((n) => [n.name, n.name]));
+        if (mapping instanceof PyDict) {
+          if (mapping.size !== mine.length) throw new PyError(`ArgumentError: the mapping must name every variable of the CPT of ${this.node.name} (${mine.map((n) => n.name).join(", ")})`);
+          for (const [k, v] of mapping.entries()) {
+            if (!theirName.has(String(k))) throw new PyError(`InvalidArgument: ${k} is not a variable of the CPT of ${this.node.name}`);
+            theirName.set(String(k), String(v));
+          }
+        } else if (mapping !== undefined && mapping !== null) {
+          const names = iterate(mapping).map(String);
+          if (names.length !== theirs.length) throw new PyError(`InvalidArgument: fillWith() needs one name per variable of the CPT of ${other.node.name}`);
+          names.forEach((mineName, i) => { if (!theirName.has(mineName)) throw new PyError(`InvalidArgument: ${mineName} is not a variable of the CPT of ${this.node.name}`); theirName.set(mineName, theirs[i].name); });
         }
-        // match variables by name, as pyAgrum does
-        const pos = mine.map((n) => theirs.findIndex((t) => t.name === n.name));
+        const pos = mine.map((n) => {
+          const i = theirs.findIndex((t) => t.name === theirName.get(n.name));
+          if (i < 0) throw new PyError(`InvalidArgument: Variable <${n.name}> not present in src (${theirs.map((t) => t.name).join(",")})`);
+          if (theirs[i].labels.length !== n.labels.length) throw new PyError(`InvalidArgument: ${n.name} and ${theirs[i].name} have different numbers of states`);
+          return i;
+        });
+        if (new Set(pos).size !== pos.length || theirs.length !== mine.length) throw new PyError(`InvalidArgument: The CPTs of ${this.node.name} and ${other.node.name} have different variables`);
+        const src = other.values();
         const cards = mine.map((n) => n.labels.length);
         const stTheirs = M.strides(theirs.map((n) => n.labels.length));
         const out = new Array(this.node.cpt.length);
         for (let o = 0; o < out.length; o++) {
-          let rem = o, src = 0;
-          for (let k = 0; k < cards.length; k++) { const i = rem % cards[k]; rem = Math.floor(rem / cards[k]); src += i * stTheirs[pos[k]]; }
-          out[o] = other.node.cpt[src];
+          let rem = o, at = 0;
+          for (let k = 0; k < cards.length; k++) { const i = rem % cards[k]; rem = Math.floor(rem / cards[k]); at += i * stTheirs[pos[k]]; }
+          out[o] = src[at];
         }
         this.node.cpt = out;
       }
@@ -527,6 +600,7 @@
         const vars = this.vars(), node = this.node;
         const parents = vars.slice(1);
         const c = node.labels.length;
+        if (node.type === "labelized" && !numerical.has(node)) throw new PyError(`fillFromFunction(): ${node.name} is a LabelizedVariable, which has no numerical values`);
         const childVals = node.labels.map((_, i) => numericValue(node, i));
         const env = new Map();
         const cards = parents.map((n) => n.labels.length);
@@ -535,38 +609,37 @@
         for (let r = 0; r < rows; r++) {
           let rem = r;
           parents.forEach((p, k) => { const i = rem % cards[k]; rem = Math.floor(rem / cards[k]); env.set(p.name, numericValue(p, i)); });
-          const v = toNumber(f(env));
-          let best = 0;
-          for (let s = 1; s < c; s++) if (Math.abs(childVals[s] - v) < Math.abs(childVals[best] - v)) best = s;
-          cpt[r * c + best] = 1;
+          cpt[r * c + stateOfValue(node, childVals, toNumber(f(env)))] = 1;
         }
         node.cpt = cpt;
       }
 
       getattr(name) {
-        modelChanged = true;
         const node = this.node;
+        // a method that changes the CPT: refused for computed CPTs
+        const w = (f) => fn(name, (...a) => { this.writable(); return f(...a); });
         switch (name) {
-          case "fillWith": return fn(name, ([v]) => {
+          case "fillWith": return w(([v, mapping]) => {
             if (typeof v === "number") node.cpt.fill(v);
-            else if (v instanceof PotHost) this.fillFrom(v);
-            else if (v instanceof Opaque) throw new PyError(`Filling the CPT of ${node.name} from ${v.name} (an inference result or tensor) is not supported`);
-            else this.assign(this.vars().map(() => null), v);
+            else if (v instanceof PotHost) this.fillFrom(v, mapping);
+            else if (v instanceof Opaque) throw new UnsupportedError(`Filling the CPT of ${node.name} from ${v.name} (an inference result or tensor) is not supported`);
+            else { if (mapping !== undefined) throw new PyError("fillWith(): a variable mapping only goes with another CPT"); this.assign(this.vars().map(() => null), v); }
             this.touched();
             return this;
           });
-          case "fillFromFunction": return fn(name, ([formula]) => { this.fillFromFunction(formula); this.touched(); return this; });
-          case "normalizeAsCPT": return fn(name, () => { M.normalizeCpt(node); return this; });
-          case "normalize": return fn(name, () => { const s = node.cpt.reduce((a, b) => a + b, 0); if (s > 0) node.cpt = node.cpt.map((v) => v / s); return this; });
-          case "translate": return fn(name, ([x]) => { node.cpt = node.cpt.map((v) => v + toNumber(x)); return this; });
-          case "scale": return fn(name, ([x]) => { node.cpt = node.cpt.map((v) => v * toNumber(x)); return this; });
-          case "abs": return fn(name, () => { node.cpt = node.cpt.map(Math.abs); return this; });
-          case "sq": return fn(name, () => { node.cpt = node.cpt.map((v) => v * v); return this; });
-          case "random": case "randomCPT": case "randomDistribution": return fn(name, () => { M.randomizeCpt(node); this.touched(); return this; });
-          case "uniformCPT": return fn(name, () => { M.uniformizeCpt(node); this.touched(); return this; });
-          case "noising": return fn(name, ([alpha]) => {
+          case "fillFromFunction": return w(([formula]) => { this.fillFromFunction(formula); this.touched(); return this; });
+          case "normalizeAsCPT": return w(() => { M.normalizeCpt(node); return this; });
+          case "normalize": return w(() => { const s = node.cpt.reduce((a, b) => a + b, 0); if (s > 0) node.cpt = node.cpt.map((v) => v / s); return this; });
+          case "translate": return w(([x]) => { node.cpt = node.cpt.map((v) => v + toNumber(x)); return this; });
+          case "scale": return w(([x]) => { node.cpt = node.cpt.map((v) => v * toNumber(x)); return this; });
+          case "abs": return w(() => { node.cpt = node.cpt.map(Math.abs); return this; });
+          case "sq": return w(() => { node.cpt = node.cpt.map((v) => v * v); return this; });
+          case "random": case "randomCPT": case "randomDistribution": return w(() => { M.randomizeCpt(node); this.touched(); return this; });
+          case "uniformCPT": return w(() => { M.uniformizeCpt(node); this.touched(); return this; });
+          case "noising": return w(([alpha]) => {
             const a = toNumber(alpha);
             node.cpt = node.cpt.map((v) => (1 - a) * v + a * Math.random());
+            randomCpts = true;
             M.normalizeCpt(node);
             return this;
           });
@@ -577,9 +650,9 @@
           case "domainSize": return fn(name, () => node.cpt.length);
           case "tolist": return fn(name, () => { const r = this.read(this.vars().map(() => null)); return r instanceof NdArray ? structuredClone(r.data) : r; });
           case "toarray": return fn(name, () => this.read(this.vars().map(() => null)));
-          case "sum": return fn(name, () => node.cpt.reduce((a, b) => a + b, 0));
-          case "max": return fn(name, () => Math.max(...node.cpt));
-          case "min": return fn(name, () => Math.min(...node.cpt));
+          case "sum": return fn(name, () => this.values().reduce((a, b) => a + b, 0));
+          case "max": return fn(name, () => Math.max(...this.values()));
+          case "min": return fn(name, () => Math.min(...this.values()));
           case "isNonZeroMap": case "putFirst": case "extract": case "margSumOut": case "margSumIn": case "sumOut": case "sumIn": case "reorganize":
             return fn(name, () => new Opaque(`Tensor.${name}()`));
         }
@@ -645,6 +718,7 @@
       ["fastVariable", fn("fastVariable", ([s, n], kw) => new VarHost(fastSpec(String(s), n ?? kw.get("domain_size") ?? 2)))],
       ["loadBN", fn("loadBN", ([f]) => { throw new PyError(`loadBN(${Py.repr(f)}): reading network files isn't possible here; build the network in code instead`); })],
     ]);
+    for (const [k, v] of Object.entries(VAR_TYPES)) gumAttrs.set("VarType_" + k.toUpperCase(), v);
     for (const [k, what] of Object.entries(OTHER_MODELS)) {
       gumAttrs.set(k, fn(k, () => { otherModels.add(what); return new Opaque(k); }));
     }
@@ -663,17 +737,23 @@
       return undefined;
     }
 
+    // The import is faithful or it fails: a statement that fails in the importer would have
+    // raised in Python too, or the importer can't follow it, so the network built so far might not
+    // be the one the script builds. Either way nothing is imported.
+    const failed = (msg) => ({ net: null, warnings: [`${msg} (The editor imports a script only when it builds exactly the script's network.)`], layout: null, networks: [], picked: -1 });
+    class StopImport { constructor(msg) { this.msg = msg; } }
     let result;
     try {
       result = Py.runScript(src, {
         resolveModule,
         // random values only matter when they reach the network, e.g. random CPT entries
         afterStatement: ({ usedRandom }) => { if (usedRandom && modelChanged) randomCpts = true; modelChanged = false; },
-        onStatementError: (msg, line) => warnings.push(line ? `${lineLabel(line)}: ${msg.replace(/ on line \d+$/, "")}` : msg),
+        onStatementError: (msg, line) => { throw new StopImport(line ? `${lineLabel(line)}: ${msg.replace(/ on line \d+$/, "")}` : msg); },
       });
     } catch (err) {
+      if (err instanceof StopImport) return failed(err.msg);
       if (!(err instanceof PyError)) throw err;
-      return { net: null, warnings: [err.message], layout: null };
+      return { net: null, warnings: [err.message], layout: null, networks: [], picked: -1 };
     }
 
     // From here on, `warnings` collects summary notes; per-line problems go after them and are capped.
@@ -684,7 +764,7 @@
         const gen = generated.get(n);
         if (!gen) continue;
         try { n.cpt = generatedCpt(b.net, n, gen, numericValue); converted.push(`${n.name} (${gen.kind})`); }
-        catch (err) { if (!(err instanceof PyError)) throw err; lineWarnings.push(`${n.name}: ${err.message}`); }
+        catch (err) { if (!(err instanceof PyError)) throw err; return failed(`${n.name}: ${err.message}`); }
       }
     }
 
@@ -721,13 +801,12 @@
     const kept = converted.filter((c) => net.nodes.some((n) => c.startsWith(n.name + " (")));
     if (kept.length) warnings.push(`Aggregator and noisy-gate nodes became plain CPTs: ${nameList(kept)}`);
     if (randomCpts) warnings.push("The script builds the network with random numbers, so the values differ from a run in Python");
+    // A CPT that isn't a distribution in every row isn't a Bayesian network, and making one up
+    // (such as uniform rows for a CPT that was never filled) wouldn't be the script's network.
     const unfilled = net.nodes.filter((n) => n.cpt.every((v) => v === 0));
-    for (const n of unfilled) M.uniformizeCpt(n);
-    if (unfilled.length) warnings.push(`The CPT${unfilled.length > 1 ? "s" : ""} of ${nameList(unfilled.map((n) => n.name))} ${unfilled.length > 1 ? "were" : "was"} never filled, so ${unfilled.length > 1 ? "they were" : "it was"} set to uniform`);
-    for (const n of net.nodes) {
-      const bad = M.badRows(n).length;
-      if (bad) warnings.push(`CPT of ${n.name}: ${bad} of ${n.cpt.length / n.labels.length} rows do not sum to 1`);
-    }
+    if (unfilled.length) return failed(`The CPT${unfilled.length > 1 ? "s" : ""} of ${nameList(unfilled.map((n) => n.name))} ${unfilled.length > 1 ? "are" : "is"} never filled (all 0). Fill ${unfilled.length > 1 ? "them" : "it"} in the script, for example with bn.cpt(name).fillWith([...]).`);
+    const bad = net.nodes.map((n) => [n, M.badRows(n).length]).filter(([, k]) => k);
+    if (bad.length) return failed(`Some CPT rows don't add up to 1: ${nameList(bad.map(([n, k]) => `${n.name} (${k} of ${n.cpt.length / n.labels.length} rows)`))}. Normalize them in the script, for example with bn.cpt(name).normalizeAsCPT().`);
     if (layout && net.nodes.every((n) => Array.isArray(layout[n.name]))) {
       for (const n of net.nodes) [n.x, n.y] = layout[n.name];
     } else M.autoLayout(net);
@@ -759,8 +838,11 @@
     if (size > 5e6) throw new PyError(`The CPT of ${child.name} would have ${size.toLocaleString("en")} cells, which is too large`);
   }
 
-  // The CPT of an aggregator or noisy-gate node, following pyAgrum's definitions. Aggregators work
-  // on the parents' values and pick the child state whose value is nearest (clamped to the domain).
+  // The CPT of an aggregator or noisy-gate node, following pyAgrum's definitions (checked against
+  // pyAgrum 3.3.2). MAX, MIN, SUM, AMPLITUDE and MEDIAN work on the parents' values and pick the
+  // child state whose value is nearest (clamped to the domain). OR, AND, EXISTS, FORALL and COUNT
+  // work on state indices: OR and AND test for state 1, EXISTS, FORALL and COUNT for state `value`,
+  // and COUNT's count is the child's state index (clamped).
   function generatedCpt(net, node, gen, numericValue) {
     const parents = M.parentsOf(net, node.id).map((id) => M.getNode(net, id));
     const c = node.labels.length;
@@ -778,20 +860,21 @@
       const vals = parents.map((p, k) => num(p, idx[k]));
       let p1 = null, state = null;
       switch (gen.kind) {
-        case "MAX": state = nearest(vals.length ? Math.max(...vals) : 0); break;
-        case "MIN": state = nearest(vals.length ? Math.min(...vals) : 0); break;
+        // with no parents: MAX and MEDIAN give the first state, MIN the last, SUM and AMPLITUDE 0
+        case "MAX": state = vals.length ? nearest(Math.max(...vals)) : 0; break;
+        case "MIN": state = vals.length ? nearest(Math.min(...vals)) : c - 1; break;
         case "SUM": state = nearest(vals.reduce((a, b) => a + b, 0)); break;
         case "AMPLITUDE": state = nearest(vals.length ? Math.max(...vals) - Math.min(...vals) : 0); break;
         case "MEDIAN": {
           const sv = vals.slice().sort((a, b) => a - b), m = sv.length >> 1;
-          state = nearest(!sv.length ? 0 : sv.length % 2 ? sv[m] : (sv[m - 1] + sv[m]) / 2);
+          state = !sv.length ? 0 : nearest(sv.length % 2 ? sv[m] : (sv[m - 1] + sv[m]) / 2);
           break;
         }
-        case "COUNT": state = nearest(vals.filter((v) => v === val).length); break;
-        case "OR": state = vals.some((v) => v === 1) ? 1 : 0; break;
-        case "AND": state = vals.length && vals.every((v) => v === 1) ? 1 : 0; break;
-        case "EXISTS": state = vals.some((v) => v === val) ? 1 : 0; break;
-        case "FORALL": state = vals.length && vals.every((v) => v === val) ? 1 : 0; break;
+        case "COUNT": state = Math.min(c - 1, idx.filter((i) => i === val).length); break;
+        case "OR": state = idx.some((i) => i === 1) ? 1 : 0; break;
+        case "AND": state = idx.every((i) => i === 1) ? 1 : 0; break;
+        case "EXISTS": state = idx.some((i) => i === val) ? 1 : 0; break;
+        case "FORALL": state = idx.every((i) => i === val) ? 1 : 0; break;
         case "NoisyOR": case "NoisyORCompound": case "NoisyORNet": {
           const leak = val;
           let p0 = 1 - leak;

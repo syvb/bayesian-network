@@ -1,7 +1,10 @@
 // Checks the importer against real pyAgrum: runs each script with pyAgrum (tools/pyagrum_truth.py),
 // imports it with the editor, and compares labels, parents and CPTs of the matching network.
 // Without arguments it checks the exported code of every demo, which also checks that the export
-// runs under pyAgrum. CPTs the importer reports as random or unfilled are compared by structure only.
+// runs under pyAgrum, and the scripts in tools/import-cases. CPTs that fastBN left random are
+// compared by structure only (pyAgrum's random values differ).
+// The contract is faithful import or none: a script that fails in pyAgrum must import nothing, and
+// so must the scripts named fail-*.py, which run in pyAgrum but use things the importer can't follow.
 // Usage: node tools/check-import.mjs [script.py|notebook.py ...]   (set PYTHON to pick the python)
 import fs from "node:fs";
 import os from "node:os";
@@ -17,6 +20,8 @@ if (!files.length) {
     fs.writeFileSync(f, P.exportPython(d.build()));
     return f;
   });
+  const cases = new URL("import-cases/", import.meta.url).pathname;
+  files.push(...fs.readdirSync(cases).filter((f) => f.endsWith(".py")).sort().map((f) => path.join(cases, f)));
 }
 
 function compare(net, truthNodes, skip) {
@@ -48,7 +53,7 @@ let bad = 0;
 for (const file of files) {
   const name = path.basename(file);
   const truthFile = path.join(tmp, name + ".json");
-  execFileSync(python, [new URL("pyagrum_truth.py", import.meta.url).pathname, file, truthFile], { stdio: "ignore" }); // the script's own output is noise here
+  execFileSync(python, [new URL("pyagrum_truth.py", import.meta.url).pathname, file, truthFile], { stdio: "ignore", cwd: tmp }); // the script's own output is noise here
   const truth = JSON.parse(fs.readFileSync(truthFile, "utf8"));
   const { net, warnings } = P.importPython(fs.readFileSync(file, "utf8"));
   // Nodes whose CPT the importer left random (fastBN, never filled): pyAgrum's random values differ.
@@ -56,7 +61,7 @@ for (const file of files) {
   const random = new Set();
   let allRandom = false;
   for (const w of warnings) {
-    const m = /^(?:All CPTs were|The CPTs? of (.*) (?:was|were)) (?:left random|never filled)/.exec(w);
+    const m = /^(?:All CPTs were|The CPTs? of (.*) (?:was|were)) left random/.exec(w);
     if (!m) continue;
     if (!m[1] || / and \d+ more$/.test(m[1])) allRandom = true;
     else m[1].split(", ").forEach((x) => random.add(x));
@@ -64,7 +69,9 @@ for (const file of files) {
   const skip = (n) => allRandom || random.has(n);
 
   let verdict;
-  if (!net) verdict = "FAIL: the editor imported no network";
+  const mustFail = name.startsWith("fail-") ? "the importer can't follow it" : truth.error ? `pyAgrum raised ${truth.error.split("\n")[0]}` : null;
+  if (mustFail) verdict = net ? `FAIL: imported a network, but ${mustFail}` : `ok (imported nothing: ${mustFail})`;
+  else if (!net) verdict = `FAIL: the editor imported no network (${warnings[0]})`;
   else {
     const names = net.nodes.map((n) => n.name).sort().join("|");
     const candidates = Object.entries(truth.bns).filter(([, ns]) => ns.map((n) => n.name).sort().join("|") === names);

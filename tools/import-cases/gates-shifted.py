@@ -1,0 +1,21 @@
+import pyagrum as gum
+bn = gum.BayesNet()
+bn.add(gum.RangeVariable("A", "", 2, 3))
+bn.cpt("A").fillWith([0.2, 0.8])
+bn.add(gum.RangeVariable("P", "", 0, 2))
+bn.cpt("P").fillWith([0.3, 0.3, 0.4])
+for k, f in [("OR", bn.addOR), ("AND", bn.addAND)]:
+    f(gum.RangeVariable(k, "", 0, 1))
+    bn.addArc("A", k)
+    bn.addArc("P", k)
+bn.addEXISTS(gum.RangeVariable("EX", "", 0, 1), 2)
+bn.addFORALL(gum.RangeVariable("FA", "", 0, 1), 2)
+bn.addCOUNT(gum.RangeVariable("CO", "", 2, 4), 1)
+for k in ["EX", "FA", "CO"]:
+    bn.addArc("A", k)
+    bn.addArc("P", k)
+bn.addAND(gum.RangeVariable("AND0", "", 0, 1))
+bn.addFORALL(gum.RangeVariable("FA0", "", 0, 1), 1)
+bn.addMIN(gum.RangeVariable("MIN0", "", 2, 4))
+bn.addMAX(gum.RangeVariable("MAX0", "", -2, 2))
+bn.addSUM(gum.RangeVariable("SUM0", "", -2, 2))

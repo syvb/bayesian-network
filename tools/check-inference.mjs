@@ -62,6 +62,99 @@ nets.forEach((net, i) => {
 });
 fs.writeFileSync(path.join(tmp, "cases.json"), JSON.stringify(cases));
 
+// Checks with an independent oracle: brute-force enumeration of the joint distribution.
+// P(x) = prod of CPT entries, times the likelihoods; an intervention do(X = s) replaces X's CPT
+// row by certainty of s (whatever its parents).
+function enumerate(net, lik = new Map(), doing = new Map()) {
+  const ns = net.nodes, cards = ns.map((n) => n.labels.length), marg = ns.map((n) => n.labels.map(() => 0));
+  const x = ns.map(() => 0);
+  let total = 0;
+  for (;;) {
+    let p = 1;
+    ns.forEach((n, i) => {
+      const s = x[i];
+      if (doing.has(n.id)) { p *= s === doing.get(n.id) ? 1 : 0; return; }
+      const parents = M.parentsOf(net, n.id), st = M.strides([n.labels.length, ...parents.map((q) => M.card(net, q))]);
+      let off = s;
+      parents.forEach((q, k) => { off += x[ns.findIndex((m) => m.id === q)] * st[k + 1]; });
+      p *= n.cpt[off] * (lik.has(n.id) ? lik.get(n.id)[s] : 1);
+    });
+    total += p;
+    ns.forEach((n, i) => { marg[i][x[i]] += p; });
+    let k = 0;
+    while (k < ns.length && ++x[k] === cards[k]) x[k++] = 0;
+    if (k === ns.length) break;
+  }
+  return { total, marginals: new Map(ns.map((n, i) => [n.id, marg[i].map((v) => v / total)])) };
+}
+const fail = (...msg) => { console.log(...msg); process.exitCode = 1; };
+const maxDiff = (a, b) => Math.max(...[...b].map(([id, p]) => Math.max(...p.map((v, s) => Math.abs(v - a.get(id)[s])))));
+let oracleCases = 0;
+const smallNet = () => { let n; do n = randomDemo.build(); while (n.nodes.reduce((t, m) => t * m.labels.length, 1) > 5e4); return n; };
+for (let k = 0; k < 40; k++) {
+  const net = smallNet();
+  const [a, b, c] = shuffled(net.nodes);
+  // feasible targets: the marginals that known positive likelihoods on two nodes produce
+  const lik = new Map([a, b].map((n) => [n.id, n.labels.map(() => 0.02 + Math.random())]));
+  const doing = new Map([[c.id, Math.floor(Math.random() * c.labels.length)]]);
+  for (const withDo of [false, true]) {
+    const truth = enumerate(net, lik, withDo ? doing : new Map());
+    const ev = new Map([a, b].map((n) => [n.id, { target: truth.marginals.get(n.id) }]));
+    if (withDo) ev.set(c.id, { do: doing.get(c.id) });
+    const r = I.posteriors(net, ev);
+    oracleCases++;
+    if (r.error) fail("feasible targets were rejected:", r.error);
+    else if (maxDiff(r.marginals, truth.marginals) > 1e-7) fail("targets: posteriors differ from enumeration by", maxDiff(r.marginals, truth.marginals));
+  }
+  // likelihood evidence with an intervention
+  const truth = enumerate(net, lik, doing);
+  const r = I.posteriors(net, new Map([...lik, [c.id, { do: doing.get(c.id) }]]));
+  oracleCases++;
+  if (r.error) fail("likelihoods with an intervention were rejected:", r.error);
+  else if (maxDiff(r.marginals, truth.marginals) > 1e-12) fail("do(): posteriors differ from enumeration by", maxDiff(r.marginals, truth.marginals));
+}
+// Targets whose likeliest state isn't the state with the largest likelihood (it once threw Newton
+// off the nearly fitted likelihoods): A -> B, targets from likelihoods A [.5,.08,.14,.86], B [.02,.42,.65].
+{
+  const net = M.createNetwork("reference");
+  const a = M.addNode(net, { name: "A", labels: ["0", "1", "2", "3"] }), b = M.addNode(net, { name: "B", labels: ["0", "1", "2"] });
+  M.addArc(net, a.id, b.id);
+  a.cpt = [0.09, 0.07, 0.69, 0.15];
+  b.cpt = [0.36, 0.64, 0, 0.77, 0.06, 0.17, 0.05, 0.27, 0.68, 0.62, 0.38, 0];
+  const truth = enumerate(net, new Map([[a.id, [0.5, 0.08, 0.14, 0.86]], [b.id, [0.02, 0.42, 0.65]]]));
+  const r = I.posteriors(net, new Map([a, b].map((n) => [n.id, { target: truth.marginals.get(n.id) }])));
+  oracleCases++;
+  if (r.error || maxDiff(r.marginals, truth.marginals) > 1e-7) fail("reference-state targets failed:", r.error || maxDiff(r.marginals, truth.marginals));
+}
+// Numerical range: rare observations must neither underflow nor overflow.
+{
+  const net = M.createNetwork("range");
+  const [a, b, c] = ["A", "B", "C"].map((name) => M.addNode(net, { name, labels: ["0", "1"] }));
+  c.cpt = [0.1, 0.9];
+  for (const [pa, pb] of [[1e-162, 1e-161], [1e-200, 1e-200]]) {
+    a.cpt = [pa, 1 - pa]; b.cpt = [pb, 1 - pb];
+    const r = I.posteriors(net, new Map([[a.id, 0], [b.id, 0]]));
+    oracleCases++;
+    if (r.error || Math.abs(r.marginals.get(c.id)[0] - 0.1) > 1e-15) fail(`observing states of probability ${pa} and ${pb}:`, r.error || r.marginals.get(c.id));
+  }
+  a.cpt = [0.5, 0.5]; b.cpt = [0.5, 0.5];
+  const r = I.posteriors(net, new Map([[a.id, [1e200, 2e200]], [b.id, [1e200, 1e200]]]));
+  oracleCases++;
+  if (r.error || Math.abs(r.marginals.get(a.id)[0] - 1 / 3) > 1e-15) fail("huge likelihoods:", r.error || r.marginals.get(a.id));
+  // invalid input is refused rather than given made-up probabilities
+  for (const [what, setup, ev] of [
+    ["a CPT of zeros", () => { c.cpt = [0, 0]; }, new Map()],
+    ["a CPT row not adding up to 1", () => { c.cpt = [0.2, 0.2]; }, new Map([[a.id, [1, 1]]])],
+    ["negative likelihoods", () => { c.cpt = [0.1, 0.9]; }, new Map([[a.id, [-1, 2]]])],
+    ["infinite likelihoods", () => {}, new Map([[a.id, [Infinity, 1]]])],
+  ]) {
+    setup();
+    oracleCases++;
+    if (!I.posteriors(net, ev).error) fail(`${what} wasn't refused`);
+  }
+}
+console.log(`${oracleCases} cases checked against brute-force enumeration`);
+
 const check = `
 import json, runpy, sys, pyagrum as gum
 cases = json.load(open(sys.argv[1])); worst = 0; bad = 0

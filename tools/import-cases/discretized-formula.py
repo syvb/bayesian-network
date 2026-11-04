@@ -1,0 +1,10 @@
+import pyagrum as gum
+bn = gum.BayesNet()
+bn.add(gum.DiscretizedVariable("X", "", [0, 1, 10]))
+bn.cpt("X").fillFromFunction("1.1")
+bn.add(gum.RangeVariable("R", "", 0, 3))
+bn.add(gum.IntegerVariable("I", "", [1, 4, 6]))
+bn.addArc("X", "R")
+bn.addArc("X", "I")
+bn.cpt("R").fillFromFunction("X/2.75")
+bn.cpt("I").fillFromFunction("X - 0.5")

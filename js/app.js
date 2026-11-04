@@ -269,11 +269,43 @@
   // Runs fn, which mutates `net`, as one undo step. Nothing is recorded when fn leaves the network
   // as it was (for example a refused arc reversal), so Undo and Redo keep what they had.
   function change(fn) {
-    const before = JSON.stringify(net);
+    const before = JSON.stringify(net), labels = labelsById();
     const result = fn();
     if (JSON.stringify(net) !== before) checkpoint(before);
+    remapEvidence(labels);
     refresh();
     return result;
+  }
+
+  const labelsById = () => new Map(net.nodes.map((n) => [n.id, n.labels]));
+
+  // Keeps the evidence on the same states when a variable's states change (from an edit, undo or
+  // redo), matching them the way CPTs are remapped (M.stateMap: by name, or renamed in place).
+  // Evidence that can't be carried over, such as likelihoods when a state is added, is cleared,
+  // with a message, rather than read against the wrong states.
+  function remapEvidence(before) {
+    if (!evidence.size) return;
+    const next = new Map(), cleared = [];
+    for (const [id, v] of evidence) {
+      const n = M.getNode(net, id), old = before.get(id);
+      if (!n || !old || (old.length === n.labels.length && old.every((l, i) => l === n.labels[i]))) { next.set(id, v); continue; }
+      const map = M.stateMap(old, n.labels); // new state -> old state, or -1 for a new state
+      const moved = (label) => { const j = old.indexOf(label), i = j < 0 ? -1 : map.indexOf(j); return i < 0 ? null : n.labels[i]; };
+      const added = map.includes(-1);
+      let w = null;
+      if (isDo(v)) { const l = moved(v.do); if (l !== null) w = { do: l }; }
+      else if (Array.isArray(v)) { if (!added && map.some((j) => v[j] > 0)) w = map.map((j) => v[j]); }
+      else if (isTarget(v)) { if (!added && v.target.every((q, j) => !(q > 0) || map.includes(j))) w = { target: map.map((j) => v.target[j]) }; }
+      else w = moved(v);
+      if (w === null) cleared.push(n.name);
+      else next.set(id, w);
+    }
+    evidence = next;
+    if (cleared.length) {
+      if (cleared.includes(M.getNode(net, softId)?.name)) hideSoftEditor();
+      toast(`Cleared the evidence on ${cleared.join(", ")}: its states changed`);
+    }
+    saveEvidence();
   }
 
   function refresh() {
@@ -307,7 +339,9 @@
   function restore(from, to) {
     if (!from.length) return;
     to.push(JSON.stringify(net));
+    const labels = labelsById();
     net = JSON.parse(from.pop());
+    remapEvidence(labels);
     refresh();
   }
   const undo = () => restore(undoStack, redoStack);
@@ -562,7 +596,9 @@
 
   function setEvidence(next) {
     const result = BNInference.posteriors(net, evidenceIndices(next));
-    if (result.error && /impossible/.test(result.error)) { toast(result.error); return false; }
+    // Evidence that is invalid, impossible or unreachable is refused; a model error (such as a
+    // CPT being edited) only suspends the results until it's fixed.
+    if (result.evidenceError) { toast(result.error); return false; }
     evidence = next;
     inferenceCache = result;
     saveEvidence();
@@ -662,7 +698,7 @@
         return `<span class="ev-chip soft" data-edit-ev="${id}" title="Soft evidence: likelihood of the observation for ${esc(n.labels.join(" : "))}. Click to edit.">${esc(n.name)} ≈ ${lik}<button class="icon" data-clear-ev="${id}" title="Remove this evidence">✕</button></span>`;
       };
       body = `<span class="ev-label">Evidence</span>` + [...ev].map(chip).join("") +
-        (onlyTargets(ev) ? "" : `<span class="muted" title="Probability of all the observations together, before observing them${[...ev.values()].some(isDo) ? ", given the interventions" : ""}${[...ev.values()].some(isTarget) ? " (probabilities you set directly aren't observations, so they aren't included)" : ""}">P(evidence) = ${fmtP(inf.pEvidence)}</span>`) +
+        (onlyTargets(ev) ? "" : `<span class="muted" title="Probability of all the observations together, before observing them${[...ev.values()].some(isDo) ? ", given the interventions" : ""}${[...ev.values()].some(isTarget) ? " (probabilities you set directly aren't observations, so they aren't included)" : ""}">P(evidence) = ${inf.pEvidenceText || fmtP(inf.pEvidence)}</span>`) +
         `<button class="small" data-clear-ev="all">Clear all</button>`;
     }
     evidenceBar.innerHTML = (body ? body + `<span class="sep"></span>` : "") + modes + toggle;
@@ -1605,7 +1641,8 @@
     change(() => { net = imported; });
     if (savedEvidence) {
       const byName = new Map(net.nodes.map((n) => [n.name, n.id]));
-      setEvidence(new Map(Object.entries(savedEvidence).filter(([name]) => byName.has(name)).map(([name, v]) => [byName.get(name), v])));
+      const next = new Map(Object.entries(savedEvidence).filter(([name]) => byName.has(name)).map(([name, v]) => [byName.get(name), v]));
+      if (next.size && !setEvidence(next)) warnings.push(`The saved evidence wasn't applied: ${BNInference.posteriors(net, evidenceIndices(next)).error}`);
     }
     select([]);
     fit();
@@ -1623,6 +1660,7 @@
     // Restores the saved network rather than undoing a counted number of steps: the history may
     // be full, and then the import didn't make it any longer.
     const saved = importBefore.net;
+    evidence = new Map(); // the imported network's, replaced below
     change(() => { net = JSON.parse(saved); });
     setEvidence(importBefore.evidence);
     fit();

@@ -1,4 +1,10 @@
-// Exact inference by variable elimination.
+// Exact inference by variable elimination, in exact rational arithmetic.
+// Each probability the model holds (CPT entries, likelihoods) is read as the shortest decimal that
+// round-trips its floating-point value, the digits that were typed or written in the script, so
+// 0.1 means exactly 1/10. A factor stores BigInt numerators over one BigInt denominator shared by
+// all its entries, so products and sums are exact: no rounding, underflow or overflow, and a
+// probability is 0 only when it really is 0. Results are turned into floating-point numbers only at
+// the end, as exactly rounded ratios.
 // Factors store values with their first variable varying fastest, like aGrUM potentials and
 // node CPTs, so a node's CPT is already a factor over [node, ...parents].
 (function () {
@@ -10,10 +16,72 @@
 
   const product = (xs) => xs.reduce((a, b) => a * b, 1);
 
-  function makeFactor(vars, cards, vals) {
+  // ------------------------------------------------------------ exact numbers
+
+  const pow10s = [];
+  const pow10 = (k) => (pow10s[k] ??= 10n ** BigInt(k));
+  const gcd = (a, b) => { while (b) [a, b] = [b, a % b]; return a; };
+
+  // A finite x >= 0 as [m, e] with x = m / 10^e exactly, from its shortest round-trip decimal.
+  function decimal(x) {
+    if (x === 0) return [0n, 0];
+    let s = String(x), e = 0;
+    const ei = s.indexOf("e");
+    if (ei >= 0) { e = -Number(s.slice(ei + 1)); s = s.slice(0, ei); }
+    const di = s.indexOf(".");
+    if (di >= 0) { e += s.length - di - 1; s = s.slice(0, di) + s.slice(di + 1); }
+    return e >= 0 ? [BigInt(s), e] : [BigInt(s) * pow10(-e), 0];
+  }
+
+  // Numbers x[i] as integers over one denominator 10^e.
+  function decimals(xs) {
+    const ds = Array.from(xs, decimal);
+    const e = ds.reduce((m, [, k]) => Math.max(m, k), 0);
+    return { ints: ds.map(([m, k]) => (k < e ? m * pow10(e - k) : m)), den: pow10(e) };
+  }
+
+  const bitLength = (x) => x.toString(16).length * 4;
+
+  // a / b as the nearest floating-point number (a >= 0, b > 0), however big a and b are.
+  function ratio(a, b) {
+    if (a === 0n) return 0;
+    const shift = bitLength(b) - bitLength(a) + 64; // so that the quotient has 64 to 72 bits
+    const q = shift >= 0 ? (a << BigInt(shift)) / b : a / (b << BigInt(-shift));
+    // scale back in two steps, so that 2^-shift itself can't underflow or overflow
+    const half = Math.trunc(shift / 2);
+    return Number(q) * 2 ** -half * 2 ** -(shift - half);
+  }
+
+  // a / b (a > 0, b > 0) in scientific notation to `digits` significant digits, such as "1.23e-400",
+  // for numbers too small or big for floating point.
+  function scientific(a, b, digits = 3) {
+    let e = a.toString().length - b.toString().length;
+    const scaled = (k) => (k >= 0 ? (a * pow10(k)) / b : a / (b * pow10(-k)));
+    if (scaled(digits - 1 - e) < pow10(digits - 1)) e--;
+    let q = (scaled(digits - e) + 5n) / 10n; // rounded to `digits` digits
+    if (q === pow10(digits)) { q = pow10(digits - 1); e++; }
+    const t = q.toString();
+    return `${t[0]}${digits > 1 ? "." + t.slice(1, digits) : ""}e${e < 0 ? "" : "+"}${e}`;
+  }
+
+  // ------------------------------------------------------------ factors
+
+  function makeFactor(vars, cards, vals, den = 1n) {
     const size = product(cards);
     if (size > MAX_FACTOR) throw new InferenceError("This network is too densely connected for exact inference in the browser.");
-    return { vars, cards, vals: vals || new Float64Array(size) };
+    return { vars, cards, vals: vals || new Array(size).fill(0n), den };
+  }
+
+  // A node's CPT as a factor. Each row is divided by its exact sum (rows are checked to add up to
+  // 1 to within rounding before inference), so that rows like 1/3, 1/3, 1/3 typed as decimals are
+  // exact distributions; a row that already adds up to 1 exactly is unchanged.
+  function cptFactor(vars, cards, cpt) {
+    const { ints } = decimals(cpt);
+    const c = cards[0], sums = [];
+    for (let o = 0; o < ints.length; o += c) { let t = 0n; for (let s = 0; s < c; s++) t += ints[o + s]; sums.push(t); }
+    const den = sums.reduce((l, t) => (l % t === 0n ? l : (l / gcd(l, t)) * t), 1n);
+    const vals = ints.map((v, i) => v * (den / sums[Math.floor(i / c)]));
+    return makeFactor(vars, cards, vals, den);
   }
 
   // Strides of `f` laid out against the variable order `vars` (0 where f lacks the variable).
@@ -25,7 +93,7 @@
   function multiply(a, b) {
     const vars = a.vars.slice(), cards = a.cards.slice();
     b.vars.forEach((v, i) => { if (!vars.includes(v)) { vars.push(v); cards.push(b.cards[i]); } });
-    const out = makeFactor(vars, cards);
+    const out = makeFactor(vars, cards, null, a.den * b.den);
     const sa = stridesIn(a, vars), sb = stridesIn(b, vars);
     const idx = new Array(vars.length).fill(0);
     let ia = 0, ib = 0;
@@ -42,8 +110,9 @@
 
   function sumOut(f, v) {
     const keep = f.vars.map((x, i) => i).filter((i) => f.vars[i] !== v);
-    const out = makeFactor(keep.map((i) => f.vars[i]), keep.map((i) => f.cards[i]));
-    const so = f.vars.map((x) => { const j = out.vars.indexOf(x); return j < 0 ? 0 : M.strides(out.cards)[j]; });
+    const out = makeFactor(keep.map((i) => f.vars[i]), keep.map((i) => f.cards[i]), null, f.den);
+    const os = M.strides(out.cards);
+    const so = f.vars.map((x) => { const j = out.vars.indexOf(x); return j < 0 ? 0 : os[j]; });
     const idx = new Array(f.vars.length).fill(0);
     let io = 0;
     for (let i = 0; i < f.vals.length; i++) {
@@ -63,7 +132,7 @@
     if (at < 0) return f;
     const own = M.strides(f.cards);
     const keep = f.vars.map((x, i) => i).filter((i) => i !== at);
-    const out = makeFactor(keep.map((i) => f.vars[i]), keep.map((i) => f.cards[i]));
+    const out = makeFactor(keep.map((i) => f.vars[i]), keep.map((i) => f.cards[i]), null, f.den);
     const si = keep.map((i) => own[i]);
     const idx = new Array(keep.length).fill(0);
     let ii = s * own[at];
@@ -107,30 +176,38 @@
       fs.push(sumOut(touching.reduce(multiply), best));
       vars.delete(best);
     }
-    return fs.reduce(multiply, makeFactor([], [], new Float64Array([1])));
+    return fs.reduce(multiply, makeFactor([], [], [1n]));
   }
 
   // Exact marginals given hard and likelihood evidence. With `only`, marginals are computed just for
-  // those node ids. Returns {marginals, pEvidence} or {error}.
+  // those node ids. Returns {marginals, pEvidence} or {error}. Expects valid input (see problem()).
+  // Only the evidence nodes' ancestors matter for a node's marginal: the CPT rows of the others add
+  // up to exactly 1, so summing them out changes nothing.
   function exact(net, evidence, only) {
     try {
       const hard = new Map(), soft = new Map();
       for (const [id, v] of evidence) (typeof v === "number" ? hard : soft).set(id, v);
-      const cptFactor = (id) => {
+      const factors = new Map();
+      const factorOf = (id) => {
+        if (factors.has(id)) return factors.get(id);
         const n = M.getNode(net, id);
         const vars = [id].concat(M.parentsOf(net, id));
-        let f = makeFactor(vars, vars.map((v) => M.card(net, v)), Float64Array.from(n.cpt));
+        let f = cptFactor(vars, vars.map((v) => M.card(net, v)), n.cpt);
         for (const [ev, s] of hard) f = reduce(f, ev, s);
+        factors.set(id, f);
         return f;
       };
       // Soft evidence multiplies its node's distribution by the likelihoods.
-      const likelihoods = [...soft].map(([id, lik]) => makeFactor([id], [lik.length], Float64Array.from(lik)));
-      const factorsFor = (ids) => [...ancestorsOf(net, [...ids, ...evidence.keys()])].map(cptFactor).concat(likelihoods);
+      const likelihoods = [...soft].map(([id, lik]) => { const { ints, den } = decimals(lik); return makeFactor([id], [lik.length], ints, den); });
+      const factorsFor = (ids) => [...ancestorsOf(net, [...ids, ...evidence.keys()])].map(factorOf).concat(likelihoods);
 
-      let pEvidence = 1;
+      let pEvidence = 1, pEvidenceText;
       if (evidence.size) {
-        pEvidence = eliminate(factorsFor([]), null).vals[0];
-        if (!(pEvidence > 0)) return { error: "This evidence is impossible: it has probability 0 in the model." };
+        const f = eliminate(factorsFor([]), null);
+        if (f.vals[0] === 0n) return { error: "This evidence is impossible: it has probability 0 in the model.", evidenceError: true };
+        pEvidence = ratio(f.vals[0], f.den);
+        // exact, for when it's beyond floating point (likelihoods needn't be at most 1)
+        if (!(pEvidence >= 1e-300 && pEvidence < 1e300)) pEvidenceText = scientific(f.vals[0], f.den);
       }
       const marginals = new Map();
       for (const n of net.nodes) {
@@ -140,14 +217,42 @@
           continue;
         }
         const f = eliminate(factorsFor([n.id]), n.id);
-        const total = f.vals.reduce((a, b) => a + b, 0);
-        marginals.set(n.id, Array.from(f.vals, (v) => (total > 0 ? v / total : 1 / f.vals.length)));
+        const total = f.vals.reduce((a, b) => a + b, 0n);
+        marginals.set(n.id, f.vals.map((v) => ratio(v, total)));
       }
-      return { marginals, pEvidence };
+      return { marginals, pEvidence, pEvidenceText };
     } catch (err) {
       if (err instanceof InferenceError) return { error: err.message };
       throw err;
     }
+  }
+
+  // What's wrong with the model or the evidence for inference, or null. Evidence problems come
+  // back with evidenceError, so the editor can refuse that evidence rather than store it.
+  function problem(net, evidence) {
+    for (const n of net.nodes) {
+      const rows = M.parentsOf(net, n.id).reduce((r, p) => r * M.card(net, p), 1);
+      if (n.cpt.length !== rows * n.labels.length || n.cpt.some((v) => !(Number.isFinite(v) && v >= 0)) || M.badRows(n).length) {
+        return { error: `Probabilities can't be computed until every CPT is valid: ${n.name} has rows that don't add up to 1.` };
+      }
+    }
+    const bad = (n, why) => ({ error: `The evidence on ${n.name} is invalid: ${why}.`, evidenceError: true });
+    for (const [id, v] of evidence) {
+      const n = M.getNode(net, id);
+      if (!n) return { error: "There is evidence on a variable that isn't in the network.", evidenceError: true };
+      const c = n.labels.length;
+      const isState = (s) => Number.isInteger(s) && s >= 0 && s < c;
+      const isValues = (xs) => Array.isArray(xs) && xs.length === c && xs.every((x) => typeof x === "number" && Number.isFinite(x) && x >= 0);
+      if (typeof v === "number") { if (!isState(v)) return bad(n, "no such state"); }
+      else if (Array.isArray(v)) {
+        if (!isValues(v)) return bad(n, `it needs ${c} finite likelihoods, none negative`);
+        if (!v.some((x) => x > 0)) return { error: `This evidence is impossible: every likelihood for ${n.name} is 0.`, evidenceError: true };
+      } else if (v && v.target) {
+        if (!isValues(v.target) || Math.abs(v.target.reduce((a, b) => a + b, 0) - 1) > 1e-6) return bad(n, `its target probabilities must be ${c} numbers, none negative, adding up to 1`);
+      } else if (v && v.do !== undefined) { if (!isState(v.do)) return bad(n, "no such state to intervene on"); }
+      else return bad(n, "unknown kind of evidence");
+    }
+    return null;
   }
 
   // evidence: Map(node id -> one of
@@ -162,9 +267,13 @@
   //   {do: state index}: an intervention, do(node = state): the node is set from outside, so
   //     the arcs into it are cut and it's fixed to that state (Pearl's graph surgery). Unlike an
   //     observation, it tells nothing about the node's causes.
-  // Returns {marginals: Map(id -> number[]), pEvidence, likelihoods: Map(id -> number[])} or {error}.
-  // pEvidence covers only the hard and likelihood evidence (given the interventions).
+  // Returns {marginals: Map(id -> number[]), pEvidence, likelihoods: Map(id -> number[])} or
+  // {error, evidenceError?}. pEvidence covers only the hard and likelihood evidence (given the
+  // interventions). Everything is exact except target evidence: its likelihoods are found
+  // numerically, to within 1e-9 of each target, and the result is exact for those likelihoods.
   function posteriors(net, evidence = new Map()) {
+    const wrong = problem(net, evidence);
+    if (wrong) return wrong;
     const isDo = (v) => v && v.do !== undefined;
     if ([...evidence.values()].some(isDo)) {
       net = intervene(net, new Map([...evidence].filter(([, v]) => isDo(v)).map(([id, v]) => [id, v.do])));
@@ -185,30 +294,34 @@
     for (let it = 0; it < 30 && !converged; it++) {
       for (const [id, { target }] of targets) {
         const r = exact(net, ev, targetIds);
-        if (r.error) return impossibleTargets(net, targets, r.error);
+        if (r.error) return r.evidenceError ? impossibleTargets(net, targets) : r;
         const p = r.marginals.get(id), lik = ev.get(id).slice();
         for (let s = 0; s < lik.length; s++) {
+          // p[s] is exactly 0 only when the state is ruled out (exact arithmetic doesn't underflow)
           if (target[s] > 0 && !(p[s] > 0)) return impossibleTargets(net, [[id, { target }]]);
-          lik[s] = target[s] > 0 ? lik[s] * (target[s] / p[s]) : 0;
+          lik[s] = target[s] > 0 ? Math.min(Number.MAX_VALUE, (lik[s] * target[s]) / p[s]) : 0;
         }
         const max = Math.max(...lik);
         ev.set(id, lik.map((x) => x / max));
       }
       const r = exact(net, ev, targetIds);
-      if (r.error) return impossibleTargets(net, targets, r.error);
+      if (r.error) return r.evidenceError ? impossibleTargets(net, targets) : r;
       converged = fitted(r);
     }
     // Strongly coupled targets (a node that almost copies another) make that fitting crawl, so
     // finish with damped Newton steps on the log-likelihoods.
     if (!converged) {
       const res = newtonFit(net, ev, targets, targetIds);
-      if (res.error) return impossibleTargets(net, targets, res.error);
+      if (res.error) return res.evidenceError ? impossibleTargets(net, targets) : res;
       converged = res.converged;
     }
-    if (!converged) return { error: "These target probabilities can't all hold at once: they contradict each other or the other evidence." };
+    // Not reaching the targets doesn't prove that they contradict each other, only that no
+    // likelihoods were found for them.
+    if (!converged) return { error: "No likelihoods were found that give all these target probabilities: they may contradict each other or the other evidence.", evidenceError: true };
     const r = exact(net, ev);
     if (r.error) return r;
     r.pEvidence = base.pEvidence;
+    r.pEvidenceText = base.pEvidenceText;
     r.likelihoods = new Map(targets.map(([id]) => [id, ev.get(id)]));
     return r;
   }
@@ -226,17 +339,20 @@
     const goal = new Map(targets.map(([id, { target }]) => [id, target]));
     const n = vars.length;
     if (!n) return { converged: true };
-    let x = vars.map(([id, s]) => Math.log(ev.get(id)[s] / Math.max(...ev.get(id))));
+    // relative to the reference state that apply() fixes at 1, so that the starting point is the
+    // likelihoods already found
+    const refOf = (target) => target.indexOf(Math.max(...target));
+    let x = vars.map(([id, s]) => Math.log(ev.get(id)[s] / ev.get(id)[refOf(goal.get(id))]));
     const apply = (xs) => {
       for (const [id, { target }] of targets) {
-        const ref = target.indexOf(Math.max(...target));
-        ev.set(id, target.map((q, s) => (q > 0 ? (s === ref ? 1 : 0) : 0)));
+        const ref = refOf(target);
+        ev.set(id, target.map((q, s) => (s === ref ? 1 : 0)));
       }
-      vars.forEach(([id, s], k) => { ev.get(id)[s] = Math.exp(xs[k]); });
+      vars.forEach(([id, s], k) => { ev.get(id)[s] = Math.exp(Math.max(-700, Math.min(700, xs[k]))); });
     };
     const residual = () => {
       const r = exact(net, ev, targetIds);
-      if (r.error) return { error: r.error };
+      if (r.error) return r;
       const f = vars.map(([id, s]) => r.marginals.get(id)[s] - goal.get(id)[s]);
       const worst = Math.max(...targets.map(([id, { target }]) => Math.max(...r.marginals.get(id).map((p, s) => Math.abs(p - target[s])))));
       return { r, f, norm: f.reduce((a, b) => a + b * b, 0), worst };
@@ -299,7 +415,7 @@
 
   function impossibleTargets(net, targets) {
     const names = targets.map(([id]) => M.getNode(net, id).name).join(", ");
-    return { error: `This evidence is impossible: the target probabilities for ${names} give probability to a state that the rest of the model rules out.` };
+    return { error: `This evidence is impossible: the target probabilities for ${names} give probability to a state that the rest of the model rules out.`, evidenceError: true };
   }
 
   // The network after the interventions in `doing` (node id -> state index): no arcs into those

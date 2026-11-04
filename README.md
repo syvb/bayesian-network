@@ -31,6 +31,8 @@ Changing states or arcs keeps the existing CPT values wherever the states still 
 
 With **Probabilities** on (toolbar button or `P`), every node shows the probability of each of its states, computed exactly in the browser by variable elimination. The results match pyAgrum's `LazyPropagation`.
 
+The arithmetic is exact: each CPT entry and likelihood is read as the decimal it was written as (0.1 is 1/10, not the nearest floating-point number), and products and sums use rational numbers with big-integer numerators and denominators, so nothing underflows, overflows or rounds until the final probabilities are shown. A probability of 0 is really 0, and a very unlikely observation (say 10⁻³⁰⁰) is still handled. Two things remain approximate. Probabilities set directly (soft evidence by target) are turned into likelihoods numerically, to within 10⁻⁹ of each target, and if no likelihoods are found the evidence is refused with a message saying so; that doesn't prove the targets contradict each other. CPTs that pyAgrum computes with exponentials (`addLogit`) or from noisy weights are as precise as floating point. While any CPT has a row that doesn't add up to 1, or evidence is invalid, no probabilities are shown until it's fixed.
+
 Click a state in a node to observe it, e.g. "the grass is wet". Every other node then shows its probabilities given the evidence. Click the state again to clear it. The evidence bar at the top of the canvas lists what you've observed, shows P(evidence), and has **Clear all**. Impossible evidence (probability 0) is refused. Probabilities also update live while you edit CPTs.
 
 **Soft evidence** is off by default. Tick **Soft evidence** in the evidence bar, and clicking a state opens a small editor with a slider and number per state, in one of two kinds:
@@ -76,7 +78,7 @@ bn.cpt("wet grass")[{"sprinkler": "off", "rain": "no"}] = [0, 1]
 
 The final comment stores node positions so that re-importing restores the layout. When evidence is set, the export ends with it too: a `gum.LazyPropagation` with `ie.setEvidence({...})`, so running the script in pyAgrum gives the probabilities the editor shows, and a `# bn-editor-evidence:` comment that re-importing reads back. Probabilities set directly (soft evidence by target) have no pyAgrum equivalent, so `setEvidence` gets the likelihoods that produce them given the rest of the evidence.
 
-**Import** (or drop a file on the canvas) accepts pyAgrum scripts, Jupyter notebooks (`.ipynb`, code cells only) and pictures exported from this editor. Scripts run in a small Python interpreter written in JavaScript (`js/python.js`): it has no access to files, the network or the page, and stops runaway loops and oversized values. It covers what model-building code usually needs: functions, loops, conditionals, comprehensions, f-strings and `%` formatting, lists, dicts, sets, and a little of `numpy`, `math` and `random`. Plotting, notebook display and inference calls (`gnb.*`, `plt.*`, `gum.LazyPropagation`, ...) are accepted and ignored.
+**Import** (or drop a file on the canvas) accepts pyAgrum scripts, Jupyter notebooks (`.ipynb`, code cells only) and pictures exported from this editor. Scripts run in a small Python interpreter written in JavaScript (`js/python.js`): it has no access to files, the network or the page, and stops runaway loops and oversized values. It covers what model-building code usually needs: functions, loops, conditionals, comprehensions, f-strings and `%` formatting, lists, dicts, sets, and a little of `numpy`, `math` and `random`. Plotting, notebook display and inference calls (`gnb.*`, `plt.*`, `gum.LazyPropagation`, ...) are accepted and ignored, as long as the network doesn't depend on their results.
 
 On the pyAgrum side it supports:
 
@@ -86,7 +88,9 @@ On the pyAgrum side it supports:
 - CPTs: `fillWith`, `fillFromFunction("...")`, `normalize`, `normalizeAsCPT`, `translate`, `scale`, `bn.cpt(x)[{...}] = ...` and numpy-style indices such as `bn.cpt(x)[1, :] = ...`
 - aggregators and noisy gates (`addMAX`, `addMIN`, `addSUM`, `addAMPLITUDE`, `addMEDIAN`, `addCOUNT`, `addEXISTS`, `addFORALL`, `addOR`, `addAND`, `addNoisyOR`, `addNoisyORNet`, `addNoisyAND`, `addLogit`, `addWeightedArc`), whose CPTs are computed the way pyAgrum does and imported as plain CPTs
 
-When the code builds several networks, the Import dialog lets you choose which one to load (by default the largest; the first one built if several are equally large). Lines that can't be run are skipped and listed as warnings, as are CPT cells the code never fills (pyAgrum leaves them at 0). `fastBN` CPTs are random, as they are in pyAgrum. Influence diagrams, Markov random fields and `gum.loadBN(file)` aren't supported.
+When the code builds several networks, the Import dialog lets you choose which one to load (by default the largest; the first one built if several are equally large).
+
+An import is faithful or it doesn't happen: if a line raises an error (as it would in Python), uses something the importer doesn't implement or can't follow (an unknown `BayesNet` method, a condition or loop on an inference result, writing through a NumPy view), or the result isn't a valid Bayesian network (a CPT never filled, or rows that don't add up to 1), nothing is imported and the dialog says which line or CPT is the problem. The one exception is `fastBN`'s and `generateCPTs()`'s random CPTs, which are random here too, with a warning that they differ from pyAgrum's. Influence diagrams, Markov random fields and `gum.loadBN(file)` aren't supported.
 
 The importer is checked against pyAgrum itself: scripts and notebooks from pyAgrum's documentation and GitHub, and the bnlearn benchmark networks (alarm, hailfinder, andes, pathfinder, link, munin with 1,041 variables, ...) written out as pyAgrum code, import to exactly the CPTs pyAgrum computes.
 
@@ -95,8 +99,8 @@ The importer is checked against pyAgrum itself: scripts and notebooks from pyAgr
 The site needs no build; serve the repository root with any static server (`python3 -m http.server`). The scripts in `tools/` check the editor from Node; the pyAgrum checks need `pip install pyagrum` (set `PYTHON` to use a particular interpreter).
 
 - `node tools/roundtrip.mjs [script.py ...]`: exports every demo (and each given script) to pyAgrum code, imports it again and checks nothing changed.
-- `node tools/check-import.mjs [script.py ...]`: runs each script with real pyAgrum and imports it with the editor, then compares variables, parents and CPTs. With no arguments it checks the demos' exported code.
-- `node tools/check-inference.mjs`: compares the editor's probabilities with pyAgrum's `LazyPropagation` on the demos and random networks, with hard and likelihood evidence.
+- `node tools/check-import.mjs [script.py ...]`: runs each script with real pyAgrum and imports it with the editor, then compares variables, parents and CPTs; a script that fails in pyAgrum must import nothing. With no arguments it checks the demos' exported code and the small scripts in `tools/import-cases/` (those named `fail-*.py` run in pyAgrum but must be refused).
+- `node tools/check-inference.mjs`: compares the editor's probabilities with pyAgrum's `LazyPropagation` on the demos and random networks, with hard and likelihood evidence, and with brute-force enumeration for target probabilities, interventions, extreme probabilities and invalid input.
 - `python3 tools/bif2py.py network.bif out.py`: writes a `.bif` network (such as the [bnlearn repository](https://www.bnlearn.com/bnrepository/)'s) as a pyAgrum script, to import or check.
 - `tools/og-image.sh`: regenerates `og-image.png`, the social preview (needs `agent-browser`, ImageMagick and `zopflipng`).
 

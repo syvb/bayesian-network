@@ -7,7 +7,23 @@
 (function () {
   "use strict";
 
-  class PyError extends Error {}
+  class PyError extends Error {
+    // The Python exception type, when the message names one ("KeyError: 'x'"); errors without one
+    // can't be caught by an except clause, as Python might not raise anything there.
+    get pyType() { return /^([A-Z]\w*(?:Error|Exception|Iteration|Interrupt|Exit)):/.exec(this.message)?.[1] ?? null; }
+  }
+  // Built-in exception types and their bases, for matching except clauses.
+  const EXCEPTION_BASES = {
+    Exception: "BaseException", ArithmeticError: "Exception", ZeroDivisionError: "ArithmeticError", OverflowError: "ArithmeticError",
+    LookupError: "Exception", KeyError: "LookupError", IndexError: "LookupError", ValueError: "Exception", TypeError: "Exception",
+    AssertionError: "Exception", NameError: "Exception", AttributeError: "Exception", RuntimeError: "Exception",
+    NotImplementedError: "RuntimeError", StopIteration: "Exception", KeyboardInterrupt: "BaseException", SystemExit: "BaseException",
+  };
+  function catches(handlerTypes, err) {
+    if (!(err instanceof PyError) || err instanceof UnsupportedError || !err.pyType) return false;
+    if (!handlerTypes) return true; // bare except
+    return handlerTypes.some((t) => { for (let x = err.pyType; x; x = EXCEPTION_BASES[x]) if (x === t) return true; return false; });
+  }
 
   // ---------------------------------------------------------------- tokenizer
 
@@ -245,11 +261,17 @@
           let orelse = null, final = null;
           while (isKw("except")) {
             p++;
-            let name = null;
+            let name = null, types = null;
             if (isOp("*")) p++;
-            if (!isOp(":")) { expr(); if (isKw("as")) { p++; name = expectName(); } }
+            if (!isOp(":")) {
+              // the exception types, by name (ValueError, gum.NotFound, (KeyError, IndexError))
+              const e = expr();
+              const names = (x) => (x.t === "tuple" ? x.items.flatMap(names) : x.t === "name" ? [x.name] : x.t === "attr" ? [x.name] : ["?"]);
+              types = names(e);
+              if (isKw("as")) { p++; name = expectName(); }
+            }
             expectOp(":");
-            handlers.push({ name, body: suite() });
+            handlers.push({ name, types, body: suite() });
           }
           if (isKw("else")) { p++; expectOp(":"); orelse = suite(); }
           if (isKw("finally")) { p++; expectOp(":"); final = suite(); }
@@ -334,7 +356,7 @@
             return { t: kw, line, names };
           }
           case "del": p++; return { t: "del", line, targets: exprList() };
-          case "assert": p++; expr(); if (isOp(",")) { p++; expr(); } return { t: "pass", line };
+          case "assert": { p++; const test = expr(); let msg = null; if (isOp(",")) { p++; msg = expr(); } return { t: "assert", line, test, msg }; }
           case "import": {
             p++;
             const names = [];
@@ -743,8 +765,13 @@
   }
 
   // A numpy array, stored as nested JS arrays.
+  // A numpy array as nested JS arrays. dtype is "float", "int" or "bool": values written into an
+  // int or bool array are converted, as numpy does. shared marks an array that shares its data with
+  // a slice, transpose or reshape of it (a numpy view); writing to either is refused, since these
+  // copies don't share data the way numpy views do. (Rows picked by integer index, x[0], are the
+  // same JS arrays, so they do behave as views.)
   class NdArray {
-    constructor(data) { this.data = data; }
+    constructor(data, dtype = "float") { this.data = data; this.dtype = dtype; this.shared = false; }
   }
 
   class PyFunction {
@@ -772,7 +799,10 @@
   }
 
   // Stands in for anything outside the model: plotting, notebooks, inference engines, unknown
-  // modules. Every use returns another stand-in, so such code runs without effect.
+  // modules. Calls, attributes, indexing and arithmetic give more stand-ins, so presentation code
+  // (gnb.showInference(bn), print(ie.posterior("A"))) runs without effect. Whatever would need its
+  // actual value (a condition, a loop, a number, a length) raises an OpaqueError instead, since
+  // the script might then build a different network than it does in Python.
   class Opaque extends HostObject {
     constructor(name) { super(); this.name = name; }
     get typeName() { return this.name; }
@@ -781,11 +811,16 @@
     getitem() { return new Opaque(`${this.name}[]`); }
     setitem() {}
     call() { return new Opaque(`${this.name}()`); }
-    iter() { return []; }
-    len() { return 0; }
+    iter() { throw opaqueUse(this, "loop over"); }
+    len() { throw opaqueUse(this, "take the length of"); }
     binop() { return this; }
-    str() { return `<${this.name}>`; }
+    // marked, so that the importer can refuse it as a name or label
+    str() { return `${OPAQUE_MARK}<${this.name}>${OPAQUE_MARK}`; }
   }
+  const OPAQUE_MARK = "\u2063";
+  // An error the script can't catch: it isn't a Python error but a limit of the importer.
+  class UnsupportedError extends PyError {}
+  const opaqueUse = (o, what) => new UnsupportedError(`Can't ${what} ${o.name.replace(/^<|>$/g, "")}: the importer doesn't compute it (it isn't part of building the network)`);
 
   function typeName(v) {
     if (v === null || v === undefined) return "NoneType";
@@ -811,7 +846,7 @@
       if (flat.length !== 1) throw new PyError("The truth value of an array with more than one element is ambiguous");
       return truthy(flat[0]);
     }
-    if (v instanceof Opaque) return false;
+    if (v instanceof Opaque) throw opaqueUse(v, "decide on");
     return true;
   }
 
@@ -906,20 +941,45 @@
     throw new PyError(`Unsupported operator ${op}`);
   }
 
-  // Elementwise numpy arithmetic with broadcasting of scalars and same-shape arrays.
-  function elementwise(op, a, b) {
-    const A = a instanceof NdArray ? a.data : a, B = b instanceof NdArray ? b.data : b;
-    const rec = (x, y) => {
-      if (Array.isArray(x) && Array.isArray(y)) {
-        if (x.length !== y.length && x.length !== 1 && y.length !== 1) throw new PyError("operands could not be broadcast together");
-        const n = Math.max(x.length, y.length);
-        return Array.from({ length: n }, (_, i) => rec(x[x.length === 1 ? 0 : i], y[y.length === 1 ? 0 : i]));
-      }
-      if (Array.isArray(x)) return x.map((v) => rec(v, y));
-      if (Array.isArray(y)) return y.map((v) => rec(x, v));
-      return numOp(op, x, y);
+  // The shape of nested arrays, refusing ragged ones (numpy would make an object array).
+  function shapeOf(d) {
+    if (!Array.isArray(d)) return [];
+    const inner = d.length ? shapeOf(d[0]) : [];
+    for (const x of d) {
+      const sx = shapeOf(x);
+      if (sx.length !== inner.length || sx.some((n, i) => n !== inner[i])) throw new UnsupportedError("Arrays with rows of different lengths aren't supported");
+    }
+    return [d.length, ...inner];
+  }
+
+  // f applied elementwise with numpy broadcasting: shapes are aligned from the last axis, and an
+  // axis of length 1 (or a missing leading axis) stretches to match the other operand.
+  function broadcast(f, A, B) {
+    const sa = shapeOf(A), sb = shapeOf(B), n = Math.max(sa.length, sb.length);
+    const pa = Array(n - sa.length).fill(1).concat(sa), pb = Array(n - sb.length).fill(1).concat(sb);
+    const out = pa.map((x, i) => {
+      if (x !== pb[i] && x !== 1 && pb[i] !== 1) throw new PyError(`ValueError: operands could not be broadcast together with shapes (${sa}) (${sb})`);
+      return Math.max(x, pb[i]);
+    });
+    checkSize(out.reduce((x, y) => x * y, 1));
+    const rec = (x, y, k) => {
+      if (k === n) return f(x, y);
+      const xs = k >= n - sa.length, ys = k >= n - sb.length; // does this axis exist in x / y?
+      return Array.from({ length: out[k] }, (_, i) => rec(xs ? x[pa[k] === 1 ? 0 : i] : x, ys ? y[pb[k] === 1 ? 0 : i] : y, k + 1));
     };
-    return new NdArray(rec(A, B));
+    return rec(A, B, 0);
+  }
+
+  const dtypeOf = (v) => (v instanceof NdArray ? v.dtype : typeof v === "boolean" ? "bool" : Number.isInteger(v) ? "int" : "float");
+
+  // Elementwise numpy arithmetic and comparisons, with broadcasting.
+  function elementwise(op, a, b) {
+    const cmp = ["==", "!=", "<", ">", "<=", ">="].includes(op);
+    const f = cmp
+      ? (x, y) => { x = toNumber(x); y = toNumber(y); return op === "==" ? x === y : op === "!=" ? x !== y : op === "<" ? x < y : op === ">" ? x > y : op === "<=" ? x <= y : x >= y; }
+      : (x, y) => numOp(op, x, y);
+    const ints = dtypeOf(a) !== "float" && dtypeOf(b) !== "float" && !["/", "**"].includes(op);
+    return new NdArray(broadcast(f, ndData(a), ndData(b)), cmp ? "bool" : ints ? "int" : "float");
   }
 
   function binop(op, a, b) {
@@ -1081,11 +1141,16 @@
     if (typeof v === "string") return [...v];
     if (v instanceof PyDict) return v.keys();
     if (v instanceof PySet) return v.values();
-    if (v instanceof NdArray) return Array.isArray(v.data) ? v.data.map(wrapNd) : [v.data];
+    if (v instanceof NdArray) return Array.isArray(v.data) ? v.data.map((x) => (Array.isArray(x) ? new NdArray(x, v.dtype) : x)) : [v.data];
     if (v instanceof HostObject) return v.iter();
     throw new PyError(`'${typeName(v)}' object is not iterable`);
   }
   const wrapNd = (x) => (Array.isArray(x) ? new NdArray(x) : x);
+  function viewOf(base, data) {
+    const v = new NdArray(data, base.dtype);
+    base.shared = v.shared = true;
+    return v;
+  }
 
   function sliceIndices(n, sl) {
     const step = sl.step === null || sl.step === undefined ? 1 : toNumber(sl.step);
@@ -1112,25 +1177,64 @@
 
   class Slice { constructor(lo, hi, step) { Object.assign(this, { lo, hi, step }); } }
 
+  // The indices an array index key selects along one axis, and whether it removes the axis.
+  function axisIndices(k, n) {
+    if (k instanceof Slice) return { idx: sliceIndices(n, k), keep: true };
+    if (Array.isArray(k)) {
+      if (k.some((i) => typeof i === "boolean")) throw new UnsupportedError("Boolean mask indexing of arrays isn't supported");
+      return { idx: k.map((i) => normIndex(i, n)), keep: true };
+    }
+    return { idx: [normIndex(k, n)], keep: false };
+  }
   function ndGet(data, keys) {
     if (!keys.length) return data;
     const [k, ...rest] = keys;
-    if (!Array.isArray(data)) throw new PyError("too many indices for array");
-    if (k instanceof Slice) return sliceIndices(data.length, k).map((i) => ndGet(data[i], rest));
-    if (Array.isArray(k)) return k.map((i) => ndGet(data[normIndex(i, data.length)], rest));
-    return ndGet(data[normIndex(k, data.length)], rest);
+    if (!Array.isArray(data)) throw new PyError("IndexError: too many indices for array");
+    const { idx, keep } = axisIndices(k, data.length);
+    return keep ? idx.map((i) => ndGet(data[i], rest)) : ndGet(data[idx[0]], rest);
   }
-  function ndSet(data, keys, value) {
-    const [k, ...rest] = keys;
-    const idx = k instanceof Slice ? sliceIndices(data.length, k) : Array.isArray(k) ? k.map((i) => normIndex(i, data.length)) : [normIndex(k, data.length)];
-    const single = !(k instanceof Slice) && !Array.isArray(k);
-    const vals = value instanceof NdArray ? value.data : value;
-    idx.forEach((i, n) => {
-      const v = single ? vals : Array.isArray(vals) ? vals[vals.length === 1 ? 0 : n] : vals;
-      if (rest.length) ndSet(data[i], rest, v);
-      else data[i] = Array.isArray(v) ? structuredClone(v) : v;
-    });
+  // numpy assignment: value broadcasts to the selected region, and it's written into the existing
+  // rows, so that rows taken earlier by integer index (views) see the change.
+  function ndSet(data, keys, value, dtype) {
+    const conv = (x) => {
+      if (Array.isArray(x)) throw new PyError("ValueError: setting an array element with a sequence");
+      return dtype === "int" ? Math.trunc(toNumber(x)) : dtype === "bool" ? truthy(x) : toNumber(x);
+    };
+    // the part of v that goes to element j of an axis of length n, in a region with `dims` axes
+    const part = (v, dims, n, j) => {
+      const vd = shapeOf(v).length;
+      if (vd < dims) return v;
+      if (vd > dims) { if (v.length !== 1) throw new PyError("ValueError: could not broadcast the value into the array"); return part(v[0], dims, n, j); }
+      if (v.length === n) return v[j];
+      if (v.length === 1) return v[0];
+      throw new PyError(`ValueError: could not broadcast a sequence of length ${v.length} into ${n} elements`);
+    };
+    const into = (target, v) => {
+      const dims = shapeOf(target).length;
+      target.forEach((t, j) => { const pv = part(v, dims, target.length, j); if (Array.isArray(t)) into(t, pv); else target[j] = conv(pv); });
+    };
+    const region = (d, ks) => {
+      if (!ks.length) return shapeOf(d).length;
+      const { idx, keep } = axisIndices(ks[0], d.length);
+      return (keep ? 1 : 0) + (idx.length ? region(d[idx[0]], ks.slice(1)) : shapeOf(d).length - 1);
+    };
+    const set = (d, ks, v) => {
+      if (!Array.isArray(d)) throw new PyError("IndexError: too many indices for array");
+      const [k, ...rest] = ks;
+      const { idx, keep } = axisIndices(k, d.length);
+      const dims = region(d, ks);
+      idx.forEach((i, n) => {
+        const pv = keep ? part(v, dims, idx.length, n) : v;
+        if (rest.length) set(d[i], rest, pv);
+        else if (Array.isArray(d[i])) into(d[i], pv);
+        else d[i] = conv(shapeOf(pv).length ? (flatten(pv).length === 1 ? flatten(pv)[0] : pv) : pv);
+      });
+    };
+    set(data, keys, ndData(value));
   }
+  const refuseShared = (a) => {
+    if (a.shared) throw new UnsupportedError("Changing a NumPy array that shares its data with a slice, transpose or reshape of it isn't supported (use .copy())");
+  };
 
   function getItem(obj, key) {
     if (obj instanceof HostObject) return obj.getitem(key);
@@ -1140,8 +1244,14 @@
       return v;
     }
     if (obj instanceof NdArray) {
-      const r = ndGet(obj.data, isTuple(key) ? key : [key]);
-      return wrapNd(r);
+      const keys = isTuple(key) ? key : [key];
+      const r = ndGet(obj.data, keys);
+      if (!Array.isArray(r)) return r;
+      // integer indices give the row itself (a view); fancy indexing a copy; slices a view,
+      // which this copy only stands in for until something writes to either array
+      if (keys.some(Array.isArray)) return new NdArray(structuredClone(r), obj.dtype);
+      if (keys.some((k) => k instanceof Slice)) return viewOf(obj, structuredClone(r));
+      return new NdArray(r, obj.dtype);
     }
     if (Array.isArray(obj) || typeof obj === "string") {
       if (key instanceof Slice) {
@@ -1158,7 +1268,7 @@
   function setItem(obj, key, value) {
     if (obj instanceof HostObject) return obj.setitem(key, value);
     if (obj instanceof PyDict) return obj.set(key, value);
-    if (obj instanceof NdArray) return ndSet(obj.data, isTuple(key) ? key : [key], value);
+    if (obj instanceof NdArray) { refuseShared(obj); return ndSet(obj.data, isTuple(key) ? key : [key], value, obj.dtype); }
     if (Array.isArray(obj) && !isTuple(obj)) {
       if (key instanceof Slice) {
         const vals = iterate(value);
@@ -1313,21 +1423,22 @@
   function ndMethod(a, name) {
     const m = {
       tolist: () => structuredClone(a.data),
-      flatten: () => new NdArray(flatten(a.data)),
-      ravel: () => new NdArray(flatten(a.data)),
-      copy: () => new NdArray(structuredClone(a.data)),
-      astype: () => new NdArray(structuredClone(a.data)),
-      reshape: (args) => new NdArray(reshape(flatten(a.data), (args.length === 1 && Array.isArray(args[0]) ? args[0] : args).map(toNumber))),
-      sum: (args, kw) => npSum(a, args[0] ?? kw.get("axis") ?? null),
-      mean: () => { const f = flatten(a.data); return f.reduce((x, y) => x + y, 0) / f.length; },
-      max: () => Math.max(...flatten(a.data)),
-      min: () => Math.min(...flatten(a.data)),
+      flatten: () => new NdArray(flatten(a.data), a.dtype),
+      ravel: () => viewOf(a, flatten(a.data)),
+      copy: () => new NdArray(structuredClone(a.data), a.dtype),
+      astype: ([t]) => astype(a, t),
+      reshape: (args) => viewOf(a, reshape(flatten(a.data), (args.length === 1 && Array.isArray(args[0]) ? args[0] : args).map(toNumber))),
+      sum: (args, kw) => reduceAxis(a, args[0] ?? kw.get("axis") ?? null, "sum"),
+      mean: (args, kw) => reduceAxis(a, args[0] ?? kw.get("axis") ?? null, "mean"),
+      max: (args, kw) => reduceAxis(a, args[0] ?? kw.get("axis") ?? null, "max"),
+      min: (args, kw) => reduceAxis(a, args[0] ?? kw.get("axis") ?? null, "min"),
       item: () => flatten(a.data)[0],
     }[name];
     if (name === "shape") return tuple(ndShape(a.data));
     if (name === "size") return flatten(a.data).length;
     if (name === "ndim") return ndShape(a.data).length;
-    if (name === "T") return new NdArray(transpose(a.data));
+    if (name === "T") return viewOf(a, transpose(a.data));
+    if (name === "dtype") return a.dtype === "float" ? "float64" : a.dtype === "int" ? "int64" : "bool";
     if (!m) throw new PyError(`'numpy.ndarray' object has no attribute '${name}'`);
     return method(name, m);
   }
@@ -1337,13 +1448,39 @@
     if (shape.length > 2) throw new PyError("Transposing arrays with more than two axes is not supported");
     return Array.from({ length: shape[1] }, (_, j) => d.map((row) => row[j]));
   }
-  function npSum(a, axis) {
-    const d = a instanceof NdArray ? a.data : a;
-    if (axis === null || axis === undefined) return flatten(d).reduce((x, y) => x + toNumber(y), 0);
-    if (axis === 0) return new NdArray(d.reduce((acc, row) => (acc === null ? structuredClone(row) : elementwise("+", acc, row).data), null));
-    if (axis === 1 || axis === -1) return new NdArray(d.map((row) => npSum(row, null)));
-    throw new PyError("Unsupported axis");
+  // dtype conversion: int truncates toward zero, bool tests for nonzero.
+  function astype(a, t) {
+    const name = t instanceof Builtin ? t.name : String(t);
+    const kind = /^(int|int8|int16|int32|int64|uint8|uint32|uint64)$/.test(name) ? "int" : /^(float|float16|float32|float64|double)$/.test(name) ? "float" : /^(bool|bool_)$/.test(name) ? "bool" : null;
+    if (!kind) throw new UnsupportedError(`astype(${name}) isn't supported`);
+    const conv = kind === "int" ? (v) => Math.trunc(toNumber(v)) : kind === "bool" ? (v) => toNumber(v) !== 0 : (v) => toNumber(v);
+    return new NdArray(flatMap(a.data, conv), kind);
   }
+  // sum, mean, max or min over all elements (axis None) or along one axis, as numpy does.
+  function reduceAxis(a, axis, op) {
+    const d = ndData(a);
+    const f = (xs) => {
+      xs = xs.map(toNumber);
+      if (!xs.length && (op === "max" || op === "min")) throw new PyError("ValueError: zero-size array to reduction operation");
+      return op === "sum" ? xs.reduce((x, y) => x + y, 0) : op === "mean" ? xs.reduce((x, y) => x + y, 0) / xs.length : op === "max" ? Math.max(...xs) : Math.min(...xs);
+    };
+    if (axis === null || axis === undefined) return f(flatten(d));
+    const shape = shapeOf(d);
+    if (!Number.isInteger(axis)) throw new UnsupportedError("Reducing over several axes at once isn't supported");
+    const ax = axis < 0 ? axis + shape.length : axis;
+    if (ax < 0 || ax >= shape.length) throw new PyError(`AxisError: axis ${axis} is out of bounds for array of dimension ${shape.length}`);
+    const rec = (x, k) => {
+      if (k === ax) {
+        // collect the elements along this axis for each position of the remaining axes
+        const gather = (items) => (Array.isArray(items[0]) ? items[0].map((_, i) => gather(items.map((r) => r[i]))) : f(items));
+        return x.length ? gather(x) : f([]);
+      }
+      return x.map((y) => rec(y, k + 1));
+    };
+    const out = rec(d, 0);
+    return Array.isArray(out) ? new NdArray(out, op === "mean" ? "float" : dtypeOf(a) === "bool" && op === "sum" ? "int" : dtypeOf(a)) : out;
+  }
+
 
   // ---------------------------------------------------------------- interpreter
 
@@ -1398,6 +1535,7 @@
     const globals = new Scope(null);
     globals.vars.set("__name__", "__main__");
     const modules = new Map();
+    const handling = []; // exceptions being handled, innermost last, for a bare raise
 
     function importModule(name) {
       if (modules.has(name)) return modules.get(name);
@@ -1472,7 +1610,10 @@
           let left = evalExpr(e.values[0], scope);
           for (let i = 0; i < e.ops.length; i++) {
             const right = evalExpr(e.values[i + 1], scope);
-            if (!compareOp(e.ops[i], left, right)) return false;
+            const r = compareOp(e.ops[i], left, right);
+            // a single comparison returns its result as is: an array of booleans, or a stand-in
+            if (e.ops.length === 1) return r;
+            if (!truthy(r)) return false;
             left = right;
           }
           return true;
@@ -1522,8 +1663,14 @@
     }
 
     function compareOp(op, a, b) {
+      if ((a instanceof Opaque || b instanceof Opaque) && op !== "is" && op !== "is not") {
+        if (op === "in" || op === "not in") throw opaqueUse(a instanceof Opaque ? a : b, "search");
+        return a instanceof Opaque ? a : b;
+      }
+      // numpy compares elementwise, giving an array of booleans
+      if ((a instanceof NdArray || b instanceof NdArray) && ["==", "!=", "<", ">", "<=", ">="].includes(op)) return elementwise(op, a, b);
       switch (op) {
-        case "==": return a instanceof NdArray || b instanceof NdArray ? eq(flatten(a), flatten(b)) : eq(a, b);
+        case "==": return eq(a, b);
         case "!=": return !eq(a, b);
         case "<": return compare(a, b) < 0;
         case ">": return compare(a, b) > 0;
@@ -1673,11 +1820,19 @@
           else throw new PyError("Unsupported augmented assignment");
           const v = evalExpr(s.value, scope);
           if (s.op === "+" && Array.isArray(cur) && !isTuple(cur)) { cur.push(...iterate(v)); set(cur); return; }
+          // numpy arrays are updated in place (other names for the same array see the change)
+          if (cur instanceof NdArray && Array.isArray(cur.data)) {
+            refuseShared(cur);
+            const r = binop(s.op, cur, v);
+            if (shapeOf(r.data).join() !== shapeOf(cur.data).join()) throw new PyError("ValueError: non-broadcastable output operand");
+            ndSet(cur.data, [new Slice(null, null, null)], r, cur.dtype);
+            return;
+          }
           set(binop(s.op, cur, v));
           return;
         }
         case "pass": return;
-        case "error": throw new PyError(s.message.replace(/ on line \d+$/, "") + " (this statement was skipped)");
+        case "error": throw new PyError(s.message.replace(/ on line \d+$/, ""));
         case "if": {
           for (const b of s.branches) {
             if (truthy(evalExpr(b.test, scope))) { execBlock(b.body, scope, recover); return; }
@@ -1742,7 +1897,18 @@
           }
           return;
         }
-        case "raise": throw new PyError(s.value ? `Script raised ${str(evalExpr(s.value, scope))}` : "Script raised an exception");
+        case "raise": {
+          if (!s.value) { if (handling.length) throw handling.at(-1); throw new PyError("RuntimeError: No active exception to reraise"); }
+          const v = evalExpr(s.value, scope);
+          // ValueError("x") evaluates to "ValueError: x"; a bare ValueError is the builtin
+          if (v instanceof Builtin && EXCEPTION_BASES[v.name]) throw new PyError(`${v.name}: `);
+          if (typeof v === "string" && /^[A-Z]\w*: /.test(v)) throw new PyError(v);
+          throw new PyError(`TypeError: exceptions must derive from BaseException (raised ${str(v)})`);
+        }
+        case "assert": {
+          if (!truthy(evalExpr(s.test, scope))) throw new PyError(`AssertionError: ${s.msg ? str(evalExpr(s.msg, scope)) : `the assert on line ${s.line} failed`}`);
+          return;
+        }
         case "import": {
           for (const { module: name, alias } of s.names) {
             if (alias) scope.assign(alias, importModule(name));
@@ -1771,11 +1937,12 @@
           try {
             try { execBlock(s.body, scope, false); }
             catch (err) {
-              if (!(err instanceof PyError) || !s.handlers.length) throw err;
+              const h = s.handlers.find((x) => catches(x.types, err));
+              if (!h) throw err;
               failed = true;
-              const h = s.handlers[0];
-              if (h.name) scope.assign(h.name, err.message);
-              execBlock(h.body, scope, recover);
+              if (h.name) scope.assign(h.name, err.message.replace(/^\w+: /, ""));
+              handling.push(err);
+              try { execBlock(h.body, scope, recover); } finally { handling.pop(); }
             }
             if (!failed && s.orelse) execBlock(s.orelse, scope, recover);
           } finally {
@@ -1799,7 +1966,7 @@
       execBlock(program, globals, true);
     } catch (sig) {
       if (sig instanceof StopScript) {
-        if (options.onStatementError) options.onStatementError("The script ran too long, so the rest of it was skipped", 0);
+        if (options.onStatementError) options.onStatementError("The script ran too long and was stopped", 0);
       } else if (sig instanceof ReturnSignal || sig instanceof BreakSignal || sig instanceof ContinueSignal) {
         if (options.onStatementError) options.onStatementError("'return', 'break' or 'continue' outside a function or loop", 0);
       } else throw sig;
@@ -1919,19 +2086,19 @@
       const tn = typeName(v);
       return types.some((ty) => ty instanceof Builtin && (ty.name === tn || (ty.name === "float" && tn === "int") || (ty.name === "int" && tn === "bool")));
     });
-    def("type", ([v]) => new Opaque(typeName(v)));
+    def("type", ([v]) => { const t = typeName(v); return b.has(t) && b.get(t) instanceof Builtin ? b.get(t) : new Opaque(t); });
     def("hasattr", ([o, n]) => { try { getAttr(o, n); return true; } catch { return false; } });
     def("getattr", ([o, n, d]) => { try { return getAttr(o, n); } catch (err) { if (d !== undefined) return d; throw err; } });
     def("chr", ([n]) => String.fromCodePoint(n));
     def("ord", ([s]) => s.codePointAt(0));
     def("iter", ([x]) => iterate(x));
-    def("next", ([x, d]) => { if (Array.isArray(x) && x.length) return x.shift(); if (d !== undefined) return d; throw new PyError("StopIteration"); });
+    def("next", ([x, d]) => { if (Array.isArray(x) && x.length) return x.shift(); if (d !== undefined) return d; throw new PyError("StopIteration: "); });
     def("id", ([x]) => hashKey(x));
     def("hash", ([x]) => hashKey(x));
     for (const name of ["open", "exec", "eval", "compile", "input", "__import__"]) {
       def(name, () => { throw new PyError(`${name}() is not supported here`); });
     }
-    for (const name of ["Exception", "ValueError", "KeyError", "TypeError", "IndexError", "RuntimeError", "AssertionError", "NotImplementedError", "ZeroDivisionError", "StopIteration"]) {
+    for (const name of Object.keys(EXCEPTION_BASES).concat("BaseException")) {
       def(name, ([msg = ""]) => `${name}: ${str(msg)}`);
     }
     return b;
@@ -2000,6 +2167,33 @@
     }
     if (name === "numpy") return numpyModule(rand);
     if (name === "numpy.random") return numpyModule(rand).getattr("random");
+    if (name === "itertools") {
+      const product = (lists, repeat) => {
+        const pools = []; for (let r = 0; r < repeat; r++) pools.push(...lists);
+        let out = [[]];
+        for (const pool of pools) { out = out.flatMap((pre) => pool.map((x) => pre.concat([x]))); checkSize(out.length); }
+        return out.map(tuple);
+      };
+      const combos = (l, k, perm) => {
+        const out = [];
+        const rec = (start, used, cur) => {
+          if (cur.length === k) { out.push(tuple(cur.slice())); checkSize(out.length); return; }
+          for (let i = perm ? 0 : start; i < l.length; i++) {
+            if (used.has(i)) continue;
+            used.add(i); cur.push(l[i]); rec(i + 1, used, cur); cur.pop(); used.delete(i);
+          }
+        };
+        rec(0, new Set(), []);
+        return out;
+      };
+      return new Module("itertools", new Map([
+        fn("product", (args, kw) => product(args.map(iterate), toNumber(kw.get("repeat") ?? 1))),
+        fn("chain", (args) => args.flatMap(iterate)),
+        fn("combinations", ([it, k]) => combos(iterate(it), toNumber(k), false)),
+        fn("permutations", ([it, k]) => { const l = iterate(it); return combos(l, k === undefined || k === null ? l.length : toNumber(k), true); }),
+        fn("repeat", ([x, n]) => { if (n === undefined) throw new UnsupportedError("itertools.repeat() without a count isn't supported"); checkSize(n); return Array(toNumber(n)).fill(x); }),
+      ]));
+    }
     if (name === "fractions") return new Module("fractions", new Map([fn("Fraction", ([a, b = 1]) => a / b)]));
     return undefined;
   }
@@ -2047,7 +2241,7 @@
       return Module.prototype.getattr.call(this, name);
     };
     return new Module("numpy", new Map([
-      fn("array", ([x]) => new NdArray(structuredClone(ndData(x)))),
+      fn("array", ([x, dt], kw) => { const d = dt ?? kw.get("dtype"); const a = new NdArray(structuredClone(ndData(x)), x instanceof NdArray ? x.dtype : flatten(ndData(x)).every((v) => typeof v === "boolean") ? "bool" : flatten(ndData(x)).every((v) => Number.isInteger(v)) ? "int" : "float"); shapeOf(a.data); return d === undefined || d === null ? a : astype(a, d); }),
       fn("asarray", ([x]) => (x instanceof NdArray ? x : new NdArray(structuredClone(ndData(x))))),
       fn("zeros", ([s]) => new NdArray(filled(shapeArg(s), () => 0))),
       fn("empty", ([s]) => new NdArray(filled(shapeArg(s), () => 0))),
@@ -2062,17 +2256,21 @@
         return new NdArray(Array.from({ length: n }, (_, i) => start + i * step));
       }),
       fn("linspace", ([a, b, n = 50]) => checkSize(n) || new NdArray(Array.from({ length: n }, (_, i) => (n === 1 ? a : a + ((b - a) * i) / (n - 1))))),
-      fn("sum", ([a], kw) => npSum(new NdArray(ndData(a)), kw.get("axis") ?? null)),
-      fn("prod", ([a]) => flatten(ndData(a)).reduce((x, y) => x * y, 1)),
-      fn("mean", ([a]) => { const f = flatten(ndData(a)); return f.reduce((x, y) => x + y, 0) / f.length; }),
+      fn("sum", ([a, axis], kw) => reduceAxis(a, axis ?? kw.get("axis") ?? null, "sum")),
+      fn("mean", ([a, axis], kw) => reduceAxis(a, axis ?? kw.get("axis") ?? null, "mean")),
+      fn("max", ([a, axis], kw) => reduceAxis(a, axis ?? kw.get("axis") ?? null, "max")),
+      fn("min", ([a, axis], kw) => reduceAxis(a, axis ?? kw.get("axis") ?? null, "min")),
+      fn("amax", ([a, axis], kw) => reduceAxis(a, axis ?? kw.get("axis") ?? null, "max")),
+      fn("amin", ([a, axis], kw) => reduceAxis(a, axis ?? kw.get("axis") ?? null, "min")),
+      fn("prod", ([a, axis], kw) => { if ((axis ?? kw.get("axis") ?? null) !== null) throw new UnsupportedError("np.prod with an axis isn't supported"); return flatten(ndData(a)).reduce((x, y) => x * y, 1); }),
       fn("concatenate", ([arrs]) => new NdArray(iterate(arrs).flatMap((x) => structuredClone(ndData(x))))),
-      fn("reshape", ([a, s]) => new NdArray(reshape(flatten(ndData(a)), shapeArg(s)))),
-      fn("transpose", ([a]) => new NdArray(transpose(ndData(a)))),
+      fn("reshape", ([a, s]) => (a instanceof NdArray ? viewOf(a, reshape(flatten(a.data), shapeArg(s))) : new NdArray(reshape(flatten(ndData(a)), shapeArg(s))))),
+      fn("transpose", ([a]) => (a instanceof NdArray ? viewOf(a, transpose(a.data)) : new NdArray(transpose(ndData(a))))),
       fn("round", ([a, nd = 0]) => (a instanceof NdArray ? new NdArray(flatMap(a.data, (v) => pyRound(v, nd))) : pyRound(a, nd))),
       fn("clip", ([a, lo, hi]) => (a instanceof NdArray ? new NdArray(flatMap(a.data, (v) => Math.min(Math.max(v, lo), hi))) : Math.min(Math.max(a, lo), hi))),
       fn("isclose", ([a, b]) => Math.abs(a - b) <= 1e-8 + 1e-5 * Math.abs(b)),
-      fn("maximum", ([a, b]) => Math.max(a, b)),
-      fn("minimum", ([a, b]) => Math.min(a, b)),
+      fn("maximum", ([a, b]) => (a instanceof NdArray || b instanceof NdArray || Array.isArray(a) || Array.isArray(b) ? new NdArray(broadcast((x, y) => Math.max(toNumber(x), toNumber(y)), ndData(a), ndData(b))) : Math.max(a, b))),
+      fn("minimum", ([a, b]) => (a instanceof NdArray || b instanceof NdArray || Array.isArray(a) || Array.isArray(b) ? new NdArray(broadcast((x, y) => Math.min(toNumber(x), toNumber(y)), ndData(a), ndData(b))) : Math.min(a, b))),
       unaryNp("exp", Math.exp), unaryNp("log", Math.log), unaryNp("sqrt", Math.sqrt), unaryNp("abs", Math.abs),
       unaryNp("floor", Math.floor), unaryNp("ceil", Math.ceil), unaryNp("log10", Math.log10), unaryNp("log2", Math.log2),
       unaryNp("sin", Math.sin), unaryNp("cos", Math.cos), unaryNp("tanh", Math.tanh),
@@ -2158,7 +2356,7 @@
   let formulaBuiltins = null, formulaMath = null;
 
   globalThis.MiniPy = {
-    PyError, HostObject, Opaque, Builtin, PyFunction, NdArray, PyDict, PySet, Slice,
+    PyError, UnsupportedError, OPAQUE_MARK, HostObject, Opaque, Builtin, PyFunction, NdArray, PyDict, PySet, Slice,
     runScript, tokenize, compileFormula,
     tuple, isTuple, iterate, flatten, str, repr, truthy, toNumber, len, typeName,
   };
