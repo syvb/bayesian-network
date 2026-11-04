@@ -453,7 +453,9 @@
       const sel = selArc && selArc.from === a.from && selArc.to === a.to;
       const d = `M${p1.x},${p1.y} L${p2.x},${p2.y}`;
       const cut = inf && isDo(evidenceIndices().get(a.to));
-      parts.push(`<g class="arc${sel ? " selected" : ""}${cut ? " cut" : ""}" data-from="${a.from}" data-to="${a.to}"><path class="hit" d="${d}"/><path class="line" d="${d}" marker-end="url(#${sel ? "arrow-sel" : "arrow"})"/></g>`);
+      // arcs into or out of a selected node are lightly highlighted
+      const near = !sel && (selNodes.has(a.from) || selNodes.has(a.to));
+      parts.push(`<g class="arc${sel ? " selected" : ""}${near ? " near" : ""}${cut ? " cut" : ""}" data-from="${a.from}" data-to="${a.to}"><path class="hit" d="${d}"/><path class="line" d="${d}" marker-end="url(#${sel ? "arrow-sel" : near ? "arrow-near" : "arrow"})"/></g>`);
     }
     for (const n of net.nodes) {
       const { w, h } = widths.get(n.id);

@@ -162,6 +162,9 @@ main { flex: 1; display: flex; min-height: 0; }
 .arc.selected path.line { stroke: var(--accent); stroke-width: 2.5; }
 .arrowhead { fill: var(--arc); }
 .arrowhead.sel { fill: var(--accent); }
+/* Arcs of a selected node: a light tint of the selection colour, a little thicker. */
+.arc.near path.line { stroke: color-mix(in srgb, var(--accent) 60%, var(--arc)); stroke-width: 2; }
+.arrowhead.near { fill: color-mix(in srgb, var(--accent) 60%, var(--arc)); }
 .ghost { stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 5 4; fill: none; }
 .rubber { fill: var(--accent-soft); fill-opacity: 0.5; stroke: var(--accent); stroke-dasharray: 3 3; }
 
