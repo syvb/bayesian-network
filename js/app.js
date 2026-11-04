@@ -48,6 +48,7 @@
   let embedded = false;
   try { embedded = window.self !== window.top; } catch { embedded = true; }
   if (embedded) {
+    document.body.classList.add("embedded");
     const b = document.querySelector('[data-action="open-editor"]');
     b.textContent = "Open in editor ↗";
     b.title = "Open this network, with the evidence set here, in the full editor in a new tab";

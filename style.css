@@ -635,3 +635,5 @@ body.viewer-loading #canvas-wrap { visibility: hidden; }
 #node-tip p.muted { font-size: 11px; }
 .node .info circle { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; }
 .node .info text { fill: var(--accent); font: italic 700 10px Georgia, serif; }
+/* Embedded in another page, the viewer shows just the network's name, without the app name. */
+body.embedded.viewer .toolbar .brand { display: none; }
