@@ -514,6 +514,7 @@
     }
     viewport.innerHTML = parts.join("");
     renderEvidenceBar(inf);
+    renderWatchPanel(inf);
     positionSoftEditor();
     $("#empty-hint").toggleAttribute("hidden", net.nodes.length > 0);
   }
@@ -785,6 +786,16 @@
     const { w, h } = nodeSize(n);
     const wrap = $("#canvas-wrap").getBoundingClientRect();
     const ew = softEditor.offsetWidth, eh = softEditor.offsetHeight;
+    // A node that's off screen (opened from its watch card) gets the editor next to the card.
+    const sx0 = view.x + (n.x - w / 2) * view.k, sx1 = view.x + (n.x + w / 2) * view.k;
+    const sy0 = view.y + (n.y - h / 2) * view.k, sy1 = view.y + (n.y + h / 2) * view.k;
+    const card = watchPanel.querySelector(`[data-watch="${n.id}"]`);
+    if (card && (sx1 < 0 || sx0 > wrap.width || sy1 < 0 || sy0 > wrap.height)) {
+      const r = card.getBoundingClientRect();
+      softEditor.style.left = Math.max(8, r.left - wrap.left - ew - 10) + "px";
+      softEditor.style.top = Math.max(8, Math.min(wrap.height - eh - 8, r.top - wrap.top)) + "px";
+      return;
+    }
     let x = view.x + (n.x + w / 2) * view.k + 10;
     if (x + ew > wrap.width - 8) x = view.x + (n.x - w / 2) * view.k - ew - 10;
     const y = view.y + (n.y - h / 2) * view.k;
@@ -1110,6 +1121,7 @@
     else if (e.key === "p" || e.key === "P") toggleProbs();
     else if ((e.key === "c" || e.key === "C") && cptNodeId() != null) { e.preventDefault(); cpt.focus(); }
     else if (e.key === "n" || e.key === "N") { e.preventDefault(); addNodeShortcut(); }
+    else if ((e.key === "w" || e.key === "W") && selNodes.size) { e.preventDefault(); toggleWatch([...selNodes]); }
     else if (e.key === "Enter" && selNodes.size === 1) { e.preventDefault(); startInlineEdit([...selNodes][0]); }
     else if (e.key.startsWith("Arrow") && selNodes.size) {
       e.preventDefault();
@@ -1155,6 +1167,63 @@
     select(created);
   }
 
+  // ------------------------------------------------------------ watch panel
+
+  // net.watch: ids of the nodes pinned to the watch panel, in the order they were pinned. It's
+  // part of the network (saved, undoable, exported) so shared links keep it.
+  const watchPanel = $("#watch-panel");
+  const watchList = () => (net.watch || []).filter((id) => M.getNode(net, id));
+  const watched = (id) => watchList().includes(id);
+
+  // Pins the nodes, or unpins them when they're all pinned already.
+  function toggleWatch(ids) {
+    const list = watchList();
+    const all = ids.every((id) => list.includes(id));
+    change(() => { net.watch = all ? list.filter((id) => !ids.includes(id)) : [...list, ...ids.filter((id) => !list.includes(id))]; });
+    toast(all ? (ids.length > 1 ? `Stopped watching ${ids.length} variables` : `Stopped watching ${M.getNode(net, ids[0]).name}`)
+      : `Watching ${ids.length > 1 ? ids.length + " variables" : M.getNode(net, ids[0]).name}: see the panel in the corner`);
+  }
+
+  function renderWatchPanel(inf) {
+    const list = inf ? watchList() : [];
+    watchPanel.hidden = !list.length;
+    if (!list.length) { watchPanel.innerHTML = ""; return; }
+    const ev = evidenceIndices();
+    watchPanel.innerHTML = `<div class="watch-head"${viewer ? "" : ' title="Select a variable and press W to add it here"'}><b>Watching</b></div>` + list.map((id) => {
+      const n = M.getNode(net, id), probs = inf.marginals && inf.marginals.get(id), observed = ev.get(id);
+      const kind = observed === undefined ? "" : isDo(observed) ? " intervened" : typeof observed === "object" ? " soft-observed" : " observed";
+      return `<div class="watch-card${kind}${selNodes.has(id) ? " selected" : ""}" data-watch="${id}">
+        <div class="watch-name"><button class="link-button" data-watch-go="${id}" title="Show ${esc(n.name)} on the canvas">${esc(n.name)}</button>${viewer ? "" : `<button class="icon" data-unwatch="${id}" title="Stop watching">✕</button>`}</div>
+        ${n.labels.map((l, s) => {
+          const p = probs ? probs[s] : null;
+          const pct = p === null ? "–" : p >= 0.9995 ? "100%" : (p * 100).toFixed(1) + "%";
+          const on = observed === s ? " observed" : isDo(observed) && observed.do === s ? " intervened" : "";
+          return `<button class="watch-row${on}" data-watch-state="${s}" title="${esc(clickHint())}"><span class="wl">${esc(l)}</span><span class="wbar"><span style="width:${(p || 0) * 100}%"></span></span><span class="wp">${pct}</span></button>`;
+        }).join("")}
+      </div>`;
+    }).join("");
+  }
+
+  watchPanel.addEventListener("click", (e) => {
+    const un = e.target.closest("[data-unwatch]");
+    if (un) { toggleWatch([+un.dataset.unwatch]); return; }
+    const go = e.target.closest("[data-watch-go]");
+    if (go) {
+      const n = M.getNode(net, +go.dataset.watchGo);
+      // centre the node, keeping the zoom
+      view.x = svg.clientWidth / 2 - n.x * view.k;
+      view.y = svg.clientHeight / 2 - n.y * view.k;
+      fitted = false;
+      applyView();
+      if (!viewer) select([n.id]);
+      return;
+    }
+    const row = e.target.closest("[data-watch-state]");
+    if (row) clickState(+row.closest("[data-watch]").dataset.watch, +row.dataset.watchState);
+  });
+  // keep wheel and drag on the panel from reaching the canvas
+  watchPanel.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+
   // ------------------------------------------------------------ side panel
 
   let focusAfterRender = null;
@@ -1190,8 +1259,9 @@
     if (selNodes.size > 1) {
       panel.innerHTML = `<h2>${selNodes.size} nodes selected</h2>
         <p class="muted">Drag to move them together. <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates, <kbd>Del</kbd> deletes.</p>
-        <button class="danger" data-act="delete">Delete ${selNodes.size} nodes</button>`;
+        <button class="danger" data-act="delete">Delete ${selNodes.size} nodes</button> <button data-act="watch" title="Pin these variables to the watch panel (W)">${[...selNodes].every(watched) ? "Unwatch" : "Watch"} ${selNodes.size} nodes</button>`;
       panel.querySelector('[data-act="delete"]').onclick = deleteSelection;
+      panel.querySelector('[data-act="watch"]').onclick = () => toggleWatch([...selNodes]);
       return;
     }
     renderNetworkPanel();
@@ -1214,6 +1284,7 @@
         <dt>Move</dt><dd>Drag nodes, or nudge with arrow keys. Drag empty space to pan, scroll to zoom, <kbd>F</kbd> to fit.</dd>
         <dt>CPTs</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (with “Keep rows summing to 1” on, the rest of the row is adjusted for you), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
         <dt>Probabilities &amp; evidence</dt><dd>With <b>Probabilities</b> on (<kbd>P</kbd>), every node shows the probability of each of its states, computed exactly from the CPTs. Click a state to observe it (for example “the grass is wet”); all other nodes update to the probabilities given that evidence. Click it again, or use the evidence bar, to clear it. Turn on <b>Soft evidence</b> in the evidence bar to set a node's probabilities directly, or to enter likelihoods for its states, instead of a certain observation.</dd>
+        <dt>Watching</dt><dd>Select a variable and press <kbd>W</kbd> (or <b>☆ Watch</b> in this panel) to pin its probabilities to a panel in the corner of the canvas. It stays in view however you pan or zoom, so you can set evidence at one end of a big network and see the effect at the other. Click a state in a card to set evidence there too, or its name to jump to the node.</dd>
         <dt>Interventions</dt><dd>To ask what happens if you <i>make</i> something true, rather than learn that it is, switch the evidence bar to <b>Intervene</b> and click a state. That sets do(node = state): the arcs into the node are cut (shown dashed), so it changes only what it causes and says nothing about its causes. For example, do(law passed = yes) shows the law's own effect on crime, without the public sentiment that makes laws pass. Interventions and observations can be combined.</dd>
         <dt>Delete / duplicate</dt><dd><kbd>Del</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd>. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</dd>
         <dt>pyAgrum</dt><dd>Export writes <code>import pyagrum as gum</code> code; <kbd>Ctrl</kbd>+<kbd>S</kbd> downloads it. Import accepts that code, hand-written <code>gum.BayesNet</code> code, and <code>gum.fastBN</code>. Export can also save a PNG or SVG picture of the canvas (with probabilities, if shown) that has the network embedded, so the picture can be imported again. You can drop a .py, .png or .svg file on the canvas. To share a network, host one of those files somewhere that allows cross-origin downloads (e.g. a GitHub repo or gist) and link to this page with <code>?src=</code> followed by the file's URL.</dd>
@@ -1282,7 +1353,7 @@
     const reorder = parents.length > 1;
     const chip = (o, role) => `<span class="chip"${role === "parent" && reorder ? ` draggable="true" tabindex="0" data-parent="${o.id}" title="Drag (or Alt+←/→) to reorder; the probability table's columns follow this order"` : ""} data-select="${o.id}">${esc(o.name)}<button class="icon" data-remove-arc="${role === "parent" ? o.id + ">" + n.id : n.id + ">" + o.id}" title="Remove arc">✕</button></span>`;
     panel.innerHTML = `
-      <h2>Variable</h2>
+      <div class="panel-title"><h2>Variable</h2><button class="small${watched(n.id) ? " on" : ""}" data-act="watch" title="Pin this variable's probabilities to the watch panel in the corner of the canvas, so you can see them wherever you are in the network (W)">${watched(n.id) ? "★ Watching" : "☆ Watch"}</button></div>
       <div class="field"><label for="n-name">Name</label><input id="n-name" type="text" value="${esc(n.name)}"></div>
       <div class="field"><label for="n-desc">Description</label><input id="n-desc" type="text" value="${esc(n.description)}"></div>
       <div class="field"><label for="n-type">Type</label><select id="n-type">
@@ -1365,6 +1436,7 @@
       change(() => M.removeArc(net, from, to));
     }));
     panel.querySelector('[data-act="delete"]').onclick = deleteSelection;
+    panel.querySelector('[data-act="watch"]').onclick = () => toggleWatch([n.id]);
 
     // Reordering parents: drag a chip before or after another, or Alt+←/→ on a focused chip.
     const order = parents.map((p) => p.id);

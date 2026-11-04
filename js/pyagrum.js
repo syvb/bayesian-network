@@ -3,6 +3,7 @@
   "use strict";
   const M = globalThis.BNModel;
   const LAYOUT_TAG = "# bn-editor-layout:";
+  const WATCH_TAG = "# bn-editor-watch:";
   const EVIDENCE_TAG = "# bn-editor-evidence:";
 
   // ---------------------------------------------------------------- export
@@ -43,6 +44,8 @@
     const layout = {};
     for (const n of net.nodes) layout[n.name] = [Math.round(n.x), Math.round(n.y)];
     out.push("", "# Node positions for the visual editor (ignored by pyAgrum).", LAYOUT_TAG + " " + JSON.stringify(layout));
+    const watched = (net.watch || []).map((id) => M.getNode(net, id)).filter(Boolean).map((n) => n.name);
+    if (watched.length) out.push("# Nodes pinned to the editor's watch panel.", WATCH_TAG + " " + JSON.stringify(watched));
     if (evidence.size) out.push("", ...evidenceCode(net, evidence));
     out.push("");
     return out.join("\n");
@@ -685,13 +688,13 @@
       }
     }
 
-    let layout = null, evidence = null;
+    let layout = null, evidence = null, watch = null;
     for (const c of result.comments) {
-      const tag = [LAYOUT_TAG, EVIDENCE_TAG].find((t) => c.text.startsWith(t));
+      const tag = [LAYOUT_TAG, EVIDENCE_TAG, WATCH_TAG].find((t) => c.text.startsWith(t));
       if (!tag) continue;
       let value;
-      try { value = JSON.parse(c.text.slice(tag.length)); } catch { lineWarnings.push(`${lineLabel(c.line)}: could not read the ${tag === LAYOUT_TAG ? "layout" : "evidence"} comment`); continue; }
-      if (tag === LAYOUT_TAG) layout = value; else evidence = value;
+      try { value = JSON.parse(c.text.slice(tag.length)); } catch { lineWarnings.push(`${lineLabel(c.line)}: could not read the ${tag === LAYOUT_TAG ? "layout" : tag === WATCH_TAG ? "watch" : "evidence"} comment`); continue; }
+      if (tag === LAYOUT_TAG) layout = value; else if (tag === WATCH_TAG) watch = value; else evidence = value;
     }
 
     for (const what of otherModels) warnings.unshift(`This script builds ${what}, which the editor doesn't support (only Bayesian networks)`);
@@ -728,6 +731,10 @@
     if (layout && net.nodes.every((n) => Array.isArray(layout[n.name]))) {
       for (const n of net.nodes) [n.x, n.y] = layout[n.name];
     } else M.autoLayout(net);
+    if (Array.isArray(watch)) {
+      const ids = watch.map((name) => M.nodeByName(net, name)?.id).filter((id) => id !== undefined);
+      if (ids.length) net.watch = [...new Set(ids)];
+    }
     // evidence: node name -> state label, likelihoods or {target}, as saved by exportPython
     return { net, warnings: warnings.concat(capWarnings(lineWarnings)), layout, evidence, networks, picked };
   }
