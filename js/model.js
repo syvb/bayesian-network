@@ -361,7 +361,17 @@
   //     run straight. Layers are as tall as their tallest node.
   // Separate pieces of the network are laid out on their own and packed side by side; lone
   // nodes go in a grid. sizeOf(node) gives {w, h}.
-  function autoLayout(net, sizeOf = estimateSize) {
+  // direction "down" (parents above children) or "right" (parents left of children). Left to
+  // right is the same layout with the axes swapped: done by swapping every node's x and y (and
+  // width and height) around it.
+  function autoLayout(net, sizeOf = estimateSize, direction = "down") {
+    if (direction === "right") {
+      const swap = () => { for (const n of net.nodes) [n.x, n.y] = [n.y, n.x]; };
+      swap();
+      autoLayout(net, (n) => { const { w, h } = sizeOf(n); return { w: h, h: w }; });
+      swap();
+      return;
+    }
     if (!net.nodes.length) return;
     const size = new Map(net.nodes.map((n) => [n.id, sizeOf(n)]));
     const near = new Map(net.nodes.map((n) => [n.id, []]));

@@ -51,7 +51,13 @@
     <button data-action="probs" class="toggle" aria-pressed="true" title="Show each node's probabilities and set evidence by clicking states (P)">Probabilities</button>
     <span class="sep"></span>
     <button data-action="add" title="Add a node (N)">Add node</button>
-    <button data-action="layout" title="Arrange nodes in layers">Auto layout</button>
+    <span class="menu-anchor">
+      <button data-action="layout" title="Arrange nodes in layers" aria-haspopup="menu" aria-expanded="false">Auto layout ▾</button>
+      <div id="layout-menu" class="menu" role="menu" hidden>
+        <button role="menuitem" data-action="layout-down"><b>Top to bottom</b><span>Causes above their effects</span></button>
+        <button role="menuitem" data-action="layout-right"><b>Left to right</b><span>Causes left of their effects; fits wide screens better</span></button>
+      </div>
+    </span>
     <button data-action="fit" title="Fit the network in view (F)">Fit</button>
     <span class="grow"></span>
     <span class="hint">Double-click: new node · Drag a node's handle: new arc · Del: delete</span>

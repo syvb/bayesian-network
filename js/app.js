@@ -1835,7 +1835,9 @@
     "gist-sign-out": () => { BNGist.signOut(); showGist({}); toast("Forgot the GitHub sign-in"); },
     undo, redo,
     add: () => addNodeShortcut(true),
-    layout: () => { change(() => M.autoLayout(net, (n) => nodeSize(n, true))); fit(); },
+    layout: () => toggleLayoutMenu(),
+    "layout-down": () => autoLayoutNet("down"),
+    "layout-right": () => autoLayoutNet("right"),
     fit,
     "copy-export": async () => { await navigator.clipboard.writeText($("#export-code").value); toast("Copied to clipboard"); },
     "download-export": downloadPython,
@@ -1925,6 +1927,12 @@
     document.querySelector('[data-action="networks"]').title = `${net.name || "Untitled"}: switch between your saved networks, or start a new one`;
   }
   const toggleShareMenu = menu($("#share-menu"), "share");
+  const toggleLayoutMenu = menu($("#layout-menu"), "layout");
+  function autoLayoutNet(direction) {
+    toggleLayoutMenu(false);
+    change(() => M.autoLayout(net, (n) => nodeSize(n, true), direction));
+    fit();
+  }
   document.querySelector('[data-action="gist"]').hidden = !BNGist.available();
   demoMenu.addEventListener("click", (e) => {
     const b = e.target.closest("[data-demo]");
