@@ -11,16 +11,16 @@
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const round = (v) => +v.toPrecision(12);
   const sum = (xs) => xs.reduce((a, b) => a + b, 0);
-  // States that read as yes/no get green/red; the others take palette colours, skipping green and
-  // red so they can't be mistaken for one.
+  // Green and red are kept for states that read as yes/no; every other state takes the remaining
+  // palette colours, so a colour never suggests a meaning the label doesn't have.
   const GREEN = PALETTE[2], RED = PALETTE[3];
+  const OTHER = PALETTE.filter((c) => c !== GREEN && c !== RED);
   const TRUTHY = new Set(["yes", "y", "true", "t", "on", "present", "positive", "pos", "success", "pass"]);
   const FALSY = new Set(["no", "n", "false", "f", "off", "absent", "negative", "neg", "none", "failure", "fail"]);
   function stateColors(labels) {
     const kind = labels.map((l) => { const k = String(l).trim().toLowerCase(); return TRUTHY.has(k) ? GREEN : FALSY.has(k) ? RED : null; });
-    const palette = kind.some(Boolean) ? PALETTE.filter((c) => c !== GREEN && c !== RED) : PALETTE;
     let i = 0;
-    return kind.map((c) => c || palette[i++ % palette.length]);
+    return kind.map((c) => c || OTHER[i++ % OTHER.length]);
   }
 
   // Accepts 0.3, .3, 30%, 1/3 (and in percent mode, 30 means 30%).
