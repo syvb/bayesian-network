@@ -23,20 +23,33 @@
     return kind.map((c) => c || OTHER[i++ % OTHER.length]);
   }
 
-  // Accepts 0.3, .3, 30%, 1/3 (and in percent mode, 30 means 30%).
-  function parseProb(text, percent) {
-    const t = String(text).trim().replace(/\s+/g, "");
+  // The number formats: probabilities (0.25), percentages (25%), or log-odds: the natural log
+  // of the state's odds against the row's other states, ln(p / (1 - p)), so 0 is 50%, +2.2 is 90%
+  // and -2.2 is 10%; 0 and 1 are -inf and +inf.
+  const logit = (p) => (p <= 0 ? -Infinity : p >= 1 ? Infinity : Math.log(p / (1 - p)));
+  const sigmoid = (x) => (x === Infinity ? 1 : x === -Infinity ? 0 : 1 / (1 + Math.exp(-x)));
+
+  // Accepts 0.3, .3, 30%, 1/3 (and in percent format, 30 means 30%). In log-odds format a plain
+  // number (negative too) or inf / -inf is log-odds; 30% and 1/3 are still probabilities.
+  function parseProb(text, format) {
+    const t = String(text).trim().replace(/\s+/g, "").replace(/[−–]/g, "-");
     if (!t) return NaN;
     let m;
     if ((m = /^([\d.]+(?:e-?\d+)?)%$/i.exec(t))) return +m[1] / 100;
     if ((m = /^([\d.]+)\/([\d.]+)$/.exec(t))) return +m[2] > 0 ? +m[1] / +m[2] : NaN;
+    if (format === "logodds") {
+      if ((m = /^([+-]?)(?:inf|infinity|∞)$/i.exec(t))) return m[1] === "-" ? 0 : 1;
+      return /^[+-]?[\d.]+(?:e[+-]?\d+)?$/i.test(t) && Number.isFinite(+t) ? sigmoid(+t) : NaN;
+    }
     if (!/^[\d.]+(?:e-?\d+)?$/i.test(t)) return NaN;
-    return percent ? +t / 100 : +t;
+    return format === "pct" ? +t / 100 : +t;
   }
 
   function createCptEditor(dock, opts) {
-    const prefs = { percent: false, balance: true, height: 300, collapsed: false };
+    const prefs = { format: "prob", balance: true, height: 300, collapsed: false };
     try { Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY)) || {}); } catch {}
+    if (prefs.percent) prefs.format = "pct"; // saved before log-odds existed
+    delete prefs.percent;
     const savePrefs = () => localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
 
     let nodeId = null;
@@ -66,9 +79,16 @@
 
     const node = () => (nodeId == null ? null : M.getNode(opts.getNet(), nodeId));
     const card = () => node().labels.length;
-    const fmt = (v) => {
+    const fmtLogit = (v) => {
+      const x = logit(v);
+      return x === Infinity ? "+∞" : x === -Infinity ? "−∞" : (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x).toFixed(2);
+    };
+    // log-odds cells name their probability on hover
+    const cellTitle = (v) => (prefs.format === "logodds" && Number.isFinite(v) ? `${fmt(v, "pct")} (${M.fmtNum(v)})` : M.fmtNum(v));
+    const fmt = (v, format = prefs.format) => {
       if (!Number.isFinite(v)) return "?";
-      if (prefs.percent) return +(v * 100).toFixed(2) + "%";
+      if (format === "logodds") return v > 1 || v < 0 ? "?" : fmtLogit(v);
+      if (format === "pct") return +(v * 100).toFixed(2) + "%";
       if (v !== 0 && Math.abs(v) < 1e-4) return v.toExponential(1);
       return String(+v.toFixed(4));
     };
@@ -166,10 +186,10 @@
         </span>
         <span class="sep full-only"></span>
         <span class="seg-toggle" role="group" aria-label="Number format">
-          <button class="small${prefs.percent ? "" : " on"}" data-cpt="mode-prob" title="Show probabilities">0.25</button><button class="small${prefs.percent ? " on" : ""}" data-cpt="mode-pct" title="Show percentages">25%</button>
+          <button class="small${prefs.format === "prob" ? " on" : ""}" data-cpt="mode-prob" title="Show probabilities">0.25</button><button class="small${prefs.format === "pct" ? " on" : ""}" data-cpt="mode-pct" title="Show percentages">25%</button><button class="small${prefs.format === "logodds" ? " on" : ""}" data-cpt="mode-logodds" title="Show log-odds: ln(p / (1 − p)), the natural log of each state's odds against the rest of its row. 0 is 50%, +2.2 is 90%, −2.2 is 10%, +4.6 is 99%. Type inf or −inf for 1 or 0, or a percentage such as 30%.">ln odds</button>
         </span>
-        <span class="nowrap"><label class="check" title="When you type a value, the other states in that row are adjusted so the row still sums to ${prefs.percent ? "100%" : "1"}">
-          <input type="checkbox" data-cpt="balance"${prefs.balance ? " checked" : ""}> <span class="full-only">Keep rows summing to ${prefs.percent ? "100%" : "1"}</span><span class="compact-only">Auto-sum</span>
+        <span class="nowrap"><label class="check" title="When you type a value, the other states in that row are adjusted so the row still sums to ${prefs.format === "pct" ? "100%" : "1"}">
+          <input type="checkbox" data-cpt="balance"${prefs.balance ? " checked" : ""}> <span class="full-only">Keep rows summing to ${prefs.format === "pct" ? "100%" : "1"}</span><span class="compact-only">Auto-sum</span>
         </label>
         <button class="help-button" popovertarget="balance-help" title="How does this work?" aria-label="How keeping rows summing to 1 works">?</button>
         ${collapseButton()}</span>
@@ -193,7 +213,7 @@
 
     function statusHTML(vals) {
       if (!rowBad(vals)) return "";
-      return `<span class="row-sum">Σ ${fmt(round(sum(vals)))}</span> <button class="linkish" data-fix>fix</button>`;
+      return `<span class="row-sum">Σ ${fmt(round(sum(vals)), prefs.format === "logodds" ? "pct" : prefs.format)}</span> <button class="linkish" data-fix>fix</button>`;
     }
 
     function tableHTML(n, parents) {
@@ -220,7 +240,7 @@
         const pcells = parents.map((p, k) => spans[k][r]
           ? `<td class="pcell" rowspan="${spans[k][r]}" data-r="${r}" data-span="${spans[k][r]}" title="Select ${spans[k][r] > 1 ? "these rows" : "this row"}">${esc(p.labels[row.idx[k]])}</td>`
           : "").join("");
-        const cells = vals.map((v, s) => `<td class="cell" data-r="${r}" data-c="${s}" title="${esc(M.fmtNum(v))}">${fmt(v)}</td>`).join("");
+        const cells = vals.map((v, s) => `<td class="cell" data-r="${r}" data-c="${s}" title="${esc(cellTitle(v))}">${fmt(v)}</td>`).join("");
         const cls = [rowBad(vals) && "bad", r > 0 && parents.length > 1 && spans[0][r] && "group-start", r % 2 && "odd"].filter(Boolean).join(" ");
         return `<tr data-r="${r}"${cls ? ` class="${cls}"` : ""}>${pcells}<td class="bar-cell"><div class="bar" data-row="${r}">${barHTML(vals)}</div></td>${cells}<td class="status">${statusHTML(vals)}</td></tr>`;
       }).join("");
@@ -292,7 +312,7 @@
       vals.forEach((v, s) => {
         const td = tr.querySelector(`td.cell[data-c="${s}"]`);
         td.textContent = fmt(v);
-        td.title = M.fmtNum(v);
+        td.title = cellTitle(v);
       });
       tr.querySelector(".status").innerHTML = statusHTML(vals);
       tr.classList.toggle("bad", rowBad(vals));
@@ -392,7 +412,9 @@
       const input = document.createElement("input");
       input.className = "cell-edit";
       input.inputMode = "decimal";
-      input.value = initial ?? (prefs.percent ? M.fmtNum(v * 100) : M.fmtNum(v));
+      const x = logit(v);
+      input.value = initial ?? (prefs.format === "pct" ? M.fmtNum(v * 100)
+        : prefs.format === "logodds" ? (x === Infinity ? "inf" : x === -Infinity ? "-inf" : M.fmtNum(+x.toPrecision(12))) : M.fmtNum(v));
       td.textContent = "";
       td.appendChild(input);
       edit = { r, c, input, overwrite: initial != null };
@@ -416,9 +438,9 @@
       if (!edit) return true;
       const { r, c, input } = edit;
       edit = null;
-      const v = parseProb(input.value, prefs.percent);
+      const v = parseProb(input.value, prefs.format);
       if (!(v >= 0)) {
-        opts.toast("Enter a probability such as 0.3, 30% or 1/3");
+        opts.toast(prefs.format === "logodds" ? "Enter log-odds such as 2.2 or -1.5, inf or -inf, or a probability such as 30%" : "Enter a probability such as 0.3, 30% or 1/3");
         render(nodeId);
         grid.focus({ preventScroll: true });
         return false;
@@ -500,8 +522,9 @@
       const lines = [];
       for (let r = r0; r <= r1; r++) {
         const line = [];
-        // percentages carry their % sign, so pasting reads them back the same in either format
-        for (let c = c0; c <= c1; c++) line.push(prefs.percent ? M.fmtNum(cpt[rows[r].offset + c] * 100) + "%" : M.fmtNum(cpt[rows[r].offset + c]));
+        // percentages carry their % sign, so pasting reads them back the same in any format (log-odds
+        // are copied as percentages too: bare log-odds would be misread as probabilities elsewhere)
+        for (let c = c0; c <= c1; c++) line.push(prefs.format !== "prob" ? M.fmtNum(cpt[rows[r].offset + c] * 100) + "%" : M.fmtNum(cpt[rows[r].offset + c]));
         lines.push(line.join("\t"));
       }
       e.clipboardData.setData("text/plain", lines.join("\n"));
@@ -514,7 +537,7 @@
       e.preventDefault();
       const text = e.clipboardData.getData("text/plain").replace(/\r/g, "").replace(/\n+$/, "");
       if (!text) return;
-      const matrix = text.split("\n").map((line) => line.split(line.includes("\t") ? "\t" : /[;,\s]+/).filter((x) => x.trim() !== "").map((x) => parseProb(x, prefs.percent)));
+      const matrix = text.split("\n").map((line) => line.split(line.includes("\t") ? "\t" : /[;,\s]+/).filter((x) => x.trim() !== "").map((x) => parseProb(x, prefs.format)));
       if (!matrix.length || matrix.some((l) => !l.length || l.some((v) => !(v >= 0)))) {
         opts.toast("The clipboard does not contain a table of probabilities");
         return;
@@ -678,8 +701,9 @@
         case "uniform": mutateRows(offsets, uniformRow); break;
         case "random": mutateRows(offsets, randomRow); break;
         case "fix-all": mutateRows(M.badRows(node()), normalizeRow); break;
-        case "mode-prob": prefs.percent = false; savePrefs(); render(nodeId); break;
-        case "mode-pct": prefs.percent = true; savePrefs(); render(nodeId); break;
+        case "mode-prob": prefs.format = "prob"; savePrefs(); render(nodeId); break;
+        case "mode-pct": prefs.format = "pct"; savePrefs(); render(nodeId); break;
+        case "mode-logodds": prefs.format = "logodds"; savePrefs(); render(nodeId); break;
         case "collapse": toggleCollapse(); break;
       }
     });
