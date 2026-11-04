@@ -682,3 +682,29 @@ body.embedded.viewer .toolbar .brand { display: none; }
 .panel-title { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-right: 22px; } /* clear of #panel-toggle */
 .panel-title h2 { margin-bottom: 0; }
 button.small.on { color: var(--accent); border-color: var(--accent); }
+
+/* ---------------------------------------------------------------- phones (mainly the viewer) */
+/* The viewer's node card on touchscreens: along the bottom of the canvas */
+#node-sheet { position: absolute; z-index: 5; left: 50%; bottom: 10px; transform: translateX(-50%); width: min(420px, calc(100% - 20px)); max-height: 55%; overflow-y: auto;
+  padding: 2px 10px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 8px 30px rgb(0 0 0 / 0.2); font-size: 15px; }
+#node-sheet[hidden] { display: none; }
+#node-sheet .watch-card { border: none; padding: 0; }
+#node-sheet .watch-name { font-size: 16px; padding: 6px 0 2px; }
+#node-sheet .watch-name .icon { font-size: 18px; padding: 4px 8px; }
+#node-sheet .sheet-desc { margin: 2px 0 8px; color: var(--muted); font-size: 14px; line-height: 1.4; white-space: pre-wrap; }
+#node-sheet .watch-row { grid-template-columns: minmax(0, 40%) 1fr 56px; min-height: 40px; padding: 4px 8px; border-radius: 6px; }
+#node-sheet .watch-row .wbar { height: 12px; }
+@media (max-width: 640px) {
+  body.viewer .toolbar .brand { display: none; }
+  body.viewer .toolbar { flex-wrap: nowrap; }
+  body.viewer #viewer-title { flex: 1; }
+  body.viewer .toolbar .grow { display: none; }
+  #evidence-bar { left: 6px; top: 6px; max-width: calc(100% - 12px); font-size: 12px; padding: 4px 8px; }
+  #evidence-bar .ev-hint { flex-basis: 100%; min-width: 0; }
+  #evidence-bar .ev-hint + .sep { display: none; }
+  /* the watch panel goes along the bottom, out of the network's way */
+  #watch-panel { top: auto; bottom: 6px; left: 6px; right: 6px; width: auto; max-height: 34%; }
+  body.sheet-open #watch-panel { display: none; }
+  /* soft evidence opens along the bottom too, whatever node it's for */
+  #soft-editor { left: 6px !important; right: 6px; top: auto !important; bottom: 6px; width: auto; max-height: 70%; overflow-y: auto; }
+}

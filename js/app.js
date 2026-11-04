@@ -452,8 +452,10 @@
     }
     const pad = 24; // leave room for the evidence bar, with half a pad below it
     const top = evidenceBar.hidden ? 0 : evidenceBar.getBoundingClientRect().bottom - r.top - pad / 2;
-    const k = Math.min(1.4, (r.width - 2 * pad) / (x1 - x0), (r.height - 2 * pad - top) / (y1 - y0));
-    view = { k, x: r.width / 2 - ((x0 + x1) / 2) * k, y: (r.height + top) / 2 - ((y0 + y1) / 2) * k };
+    // on narrow screens the watch panel goes along the bottom, so leave room for it too
+    const bottom = !watchPanel.hidden && watchPanel.offsetWidth > r.width / 2 ? watchPanel.offsetHeight + 8 : 0;
+    const k = Math.min(1.4, (r.width - 2 * pad) / (x1 - x0), (r.height - 2 * pad - top - bottom) / (y1 - y0));
+    view = { k, x: r.width / 2 - ((x0 + x1) / 2) * k, y: (r.height + top - bottom) / 2 - ((y0 + y1) / 2) * k };
     applyView();
   }
 
@@ -549,6 +551,7 @@
     viewport.innerHTML = parts.join("");
     renderEvidenceBar(inf);
     renderWatchPanel(inf);
+    renderNodeSheet(inf);
     positionSoftEditor();
     $("#empty-hint").toggleAttribute("hidden", net.nodes.length > 0);
   }
@@ -649,7 +652,14 @@
 
   const fmtPct = (q) => +(q * 100).toPrecision(3) + "%";
   // What clicking a state does in the current mode, for the side panel (and the viewer).
+  // A touchscreen: in the viewer, tapping a node opens its card (the bars are too small to tap).
+  const touchScreen = matchMedia("(pointer: coarse)").matches;
   function clickModeText() {
+    if (touchScreen && viewer) {
+      return clickMode === "intervene"
+        ? "Tap a node, then one of its states, to make it true from outside, do(node = state): you see only its effects, not what its causes would imply. Pinch to zoom."
+        : "Tap a node, then one of its states, to observe it; every other node then shows its updated probabilities. Pinch to zoom.";
+    }
     return clickMode === "intervene"
       ? "Click a state to make it true from outside, do(node = state): the arcs into the node are cut, so you see only its effects, not what its causes would imply."
       : softMode
@@ -671,7 +681,7 @@
     const ev = evidenceIndices();
     const fmtP = (p) => (p >= 0.001 ? +p.toPrecision(3) : p.toExponential(2));
     const mode = (m, label, title) => `<button type="button" class="small${clickMode === m ? " on" : ""}" data-click-mode="${m}" title="${title}">${label}</button>`;
-    const modes = `<span class="muted click-label">Click a state to</span><span class="seg-toggle">` +
+    const modes = `<span class="muted click-label">${touchScreen ? "Tap" : "Click"} a state to</span><span class="seg-toggle">` +
       mode("observe", "Observe", "Clicking a state observes it: you learn that it's true, which also tells you about its causes") +
       mode("intervene", "Intervene", "Clicking a state sets it from outside, do(node = state): the arcs into it are cut, so it changes only what it causes. Use it to ask what would happen if you made something true") +
       `</span>`;
@@ -911,7 +921,23 @@
     return node;
   }
 
+  // Fingers on the canvas, for pinch zoom: pointer id -> position.
+  const touches = new Map();
+  const pinchState = () => {
+    const [a, b] = [...touches.values()], r = svg.getBoundingClientRect();
+    return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, cx: (a.x + b.x) / 2 - r.left, cy: (a.y + b.y) / 2 - r.top };
+  };
+
   svg.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "touch") touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.size >= 2) {
+      // a second finger: pinch to zoom (and pan), unless the first one is already moving nodes
+      if (drag && drag.mode === "move" && drag.moved) return;
+      drag = { mode: "pinch", start: pinchState(), view: { ...view } };
+      svg.setPointerCapture(e.pointerId);
+      showNodeTip(null);
+      return;
+    }
     if (e.button !== 0 && e.button !== 1) return;
     commitInline();
     svg.focus({ preventScroll: true });
@@ -922,7 +948,8 @@
     if (viewer) {
       // The viewer only pans, and a click on a state sets evidence.
       const st = showProbs && nodeEl && e.target.closest("[data-state]");
-      drag = { mode: "pan", sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y, moved: false, state: st ? { id: +nodeEl.dataset.node, s: +st.dataset.state } : null };
+      drag = { mode: "pan", sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y, moved: false, state: st ? { id: +nodeEl.dataset.node, s: +st.dataset.state } : null,
+        touch: e.pointerType === "touch", node: nodeEl ? +nodeEl.dataset.node : null };
       svg.setPointerCapture(e.pointerId);
       return;
     }
@@ -976,16 +1003,25 @@
     nodeTip.style.left = Math.max(4, Math.min(wrapW - tw - 4, cx - tw / 2)) + "px";
     nodeTip.style.top = Math.max(4, top) + "px";
   }
-  svg.addEventListener("pointerover", (e) => { const el = e.target.closest("[data-node]"); showNodeTip(el ? +el.dataset.node : null); });
+  svg.addEventListener("pointerover", (e) => { if (e.pointerType === "touch") return; const el = e.target.closest("[data-node]"); showNodeTip(el ? +el.dataset.node : null); });
   svg.addEventListener("pointerleave", () => showNodeTip(null));
   svg.addEventListener("pointerdown", () => showNodeTip(null));
   svg.addEventListener("wheel", () => showNodeTip(null), { passive: true });
 
   svg.addEventListener("pointermove", (e) => {
     lastPointer = toWorld(e);
+    if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (!drag) return;
     const p = lastPointer;
-    if (drag.mode === "pan") {
+    if (drag.mode === "pinch") {
+      if (touches.size < 2) return;
+      const now = pinchState(), s = drag.start, v = drag.view;
+      // the world point that was under the fingers' midpoint stays under it
+      const k = Math.min(3, Math.max(0.2, v.k * (now.d / s.d)));
+      view = { k, x: now.cx - ((s.cx - v.x) / v.k) * k, y: now.cy - ((s.cy - v.y) / v.k) * k };
+      fitted = false;
+      applyView();
+    } else if (drag.mode === "pan") {
       const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
       if (!drag.moved && Math.hypot(dx, dy) < 3) return;
       drag.moved = true;
@@ -1019,11 +1055,14 @@
   });
 
   function endDrag(e) {
+    touches.delete(e.pointerId);
     if (!drag) return;
     const d = drag;
     drag = null;
     svg.classList.remove("panning");
-    if (d.mode === "pan" && !d.moved && d.state) clickState(d.state.id, d.state.s);
+    if (d.mode === "pinch") return; // the other finger lifting does nothing either
+    if (d.mode === "pan" && !d.moved && d.touch) openNodeSheet(d.node);
+    else if (d.mode === "pan" && !d.moved && d.state) clickState(d.state.id, d.state.s);
     else if (d.mode === "pan" && !d.moved) select([]);
     else if (d.mode === "move" && d.moved) { save(); render(); }
     else if (d.mode === "move" && d.state) clickState(d.state.id, d.state.s);
@@ -1226,19 +1265,51 @@
     if (!list.length) { watchPanel.innerHTML = ""; return; }
     const ev = evidenceIndices();
     watchPanel.innerHTML = `<div class="watch-head"${viewer ? "" : ' title="Select a variable and press W to add it here"'}><b>Watching</b></div>` + list.map((id) => {
-      const n = M.getNode(net, id), probs = inf.marginals && inf.marginals.get(id), observed = ev.get(id);
-      const kind = observed === undefined ? "" : isDo(observed) ? " intervened" : typeof observed === "object" ? " soft-observed" : " observed";
-      return `<div class="watch-card${kind}${selNodes.has(id) ? " selected" : ""}" data-watch="${id}">
-        <div class="watch-name"><button class="link-button" data-watch-go="${id}" title="Show ${esc(n.name)} on the canvas">${esc(n.name)}</button>${viewer ? "" : `<button class="icon" data-unwatch="${id}" title="Stop watching">✕</button>`}</div>
-        ${n.labels.map((l, s) => {
-          const p = probs ? probs[s] : null;
-          const pct = p === null ? "–" : p >= 0.9995 ? "100%" : (p * 100).toFixed(1) + "%";
-          const on = observed === s ? " observed" : isDo(observed) && observed.do === s ? " intervened" : "";
-          return `<button class="watch-row${on}" data-watch-state="${s}" title="${esc(clickHint())}"><span class="wl">${esc(l)}</span><span class="wbar"><span style="width:${(p || 0) * 100}%"></span></span><span class="wp">${pct}</span></button>`;
-        }).join("")}
-      </div>`;
+      const n = M.getNode(net, id);
+      return stateCard(n, inf, ev, `<button class="link-button" data-watch-go="${id}" title="Show ${esc(n.name)} on the canvas">${esc(n.name)}</button>${viewer ? "" : `<button class="icon" data-unwatch="${id}" title="Stop watching">✕</button>`}`);
     }).join("");
   }
+
+  // A card with a node's probabilities, one button per state, as in the watch panel and the
+  // viewer's node card. `head` is the HTML of its title line.
+  function stateCard(n, inf, ev, head, extra = "") {
+    const probs = inf.marginals && inf.marginals.get(n.id), observed = ev.get(n.id);
+    const kind = observed === undefined ? "" : isDo(observed) ? " intervened" : typeof observed === "object" ? " soft-observed" : " observed";
+    return `<div class="watch-card${kind}${selNodes.has(n.id) ? " selected" : ""}" data-watch="${n.id}">
+      <div class="watch-name">${head}</div>${extra}
+      ${n.labels.map((l, s) => {
+        const p = probs ? probs[s] : null;
+        const pct = p === null ? "–" : p >= 0.9995 ? "100%" : (p * 100).toFixed(1) + "%";
+        const on = observed === s ? " observed" : isDo(observed) && observed.do === s ? " intervened" : "";
+        return `<button class="watch-row${on}" data-watch-state="${s}" title="${esc(clickHint())}"><span class="wl">${esc(l)}</span><span class="wbar"><span style="width:${(p || 0) * 100}%"></span></span><span class="wp">${pct}</span></button>`;
+      }).join("")}
+    </div>`;
+  }
+
+  // ------------------------------------------------------------ viewer node card (touchscreens)
+
+  // On a touchscreen the viewer's state bars are too small to tap, and there's no hover for
+  // descriptions, so tapping a node opens this card at the bottom of the canvas instead, with
+  // the node's description and a large button per state.
+  const nodeSheet = $("#node-sheet");
+  let sheetId = null;
+  function openNodeSheet(id) {
+    sheetId = id;
+    select(id === null ? [] : [id]);
+  }
+  function renderNodeSheet(inf) {
+    const n = sheetId === null ? null : M.getNode(net, sheetId);
+    nodeSheet.hidden = !n || !inf || !viewer;
+    document.body.classList.toggle("sheet-open", !nodeSheet.hidden);
+    if (nodeSheet.hidden) { nodeSheet.innerHTML = ""; return; }
+    nodeSheet.innerHTML = stateCard(n, inf, evidenceIndices(), `<b>${esc(n.name)}</b><button class="icon" data-sheet-close title="Close">✕</button>`,
+      n.description ? `<p class="sheet-desc">${esc(n.description)}</p>` : "");
+  }
+  nodeSheet.addEventListener("click", (e) => {
+    if (e.target.closest("[data-sheet-close]")) { openNodeSheet(null); return; }
+    const row = e.target.closest("[data-watch-state]");
+    if (row) clickState(sheetId, +row.dataset.watchState);
+  });
 
   watchPanel.addEventListener("click", (e) => {
     const un = e.target.closest("[data-unwatch]");
