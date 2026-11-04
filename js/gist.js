@@ -19,7 +19,8 @@ const BNGist = (() => {
 
   const PENDING_KEY = "bn-editor-gist-pending";
   const PENDING_MAX_AGE = 10 * 60 * 1000; // GitHub's OAuth codes last 10 minutes too
-  const OAUTH_PARAMS = ["code", "state", "error", "error_description", "error_uri"];
+  // the parameters GitHub adds to the redirect back (iss names the issuer, RFC 9207)
+  const OAUTH_PARAMS = ["code", "state", "iss", "error", "error_description", "error_uri"];
 
   let token = null;
 
