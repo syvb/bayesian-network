@@ -45,6 +45,13 @@
   // ?view opens the viewer: full screen probabilities without the editing tools, for sharing a
   // scenario. Readers can set evidence; nothing they do is saved until they open the editor.
   let viewer = new URLSearchParams(location.search).has("view");
+  let embedded = false;
+  try { embedded = window.self !== window.top; } catch { embedded = true; }
+  if (embedded) {
+    const b = document.querySelector('[data-action="open-editor"]');
+    b.textContent = "Open in editor ↗";
+    b.title = "Open this network, with the evidence set here, in the full editor in a new tab";
+  }
   let viewerEvidenceChanged = false;
   if (viewer) {
     showProbs = true;
@@ -1534,11 +1541,39 @@
   const fromBase64Url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
   const pipe = async (bytes, stream) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
 
+  // A link with the current network (and evidence) in its hash; ?view opens it in the viewer.
+  async function netLink(asViewer) {
+    const packed = await pipe(new TextEncoder().encode(exportCode()), new CompressionStream("deflate-raw"));
+    return location.href.replace(/[?#].*$/, "") + (asViewer ? "?view" : "") + "#net=" + toBase64Url(packed);
+  }
+
+  // HTML that embeds the viewer for `url` in an iframe, sized to the network's shape.
+  function embedCode(url) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of net.nodes) {
+      const { w, h } = nodeSize(n, true);
+      x0 = Math.min(x0, n.x - w / 2); x1 = Math.max(x1, n.x + w / 2);
+      y0 = Math.min(y0, n.y - h / 2); y1 = Math.max(y1, n.y + h / 2);
+    }
+    // at about 800px wide, plus the title bar and evidence bar
+    const height = Math.round(Math.max(360, Math.min(900, 800 * (y1 - y0) / Math.max(1, x1 - x0) + 140)));
+    const attr = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    return `<iframe src="${attr(url)}" title="${attr(net.name || "Bayesian network")}" width="100%" height="${height}" style="border: 1px solid #d0d4dc; border-radius: 8px;" loading="lazy"></iframe>`;
+  }
+
+  async function copyEmbed(url) {
+    const code = embedCode(url);
+    try {
+      await navigator.clipboard.writeText(code);
+      toast("Copied the embed code: paste it into a web page's HTML");
+    } catch {
+      prompt("Copy this embed code:", code);
+    }
+  }
+
   async function shareLink(asViewer = false) {
     if (!net.nodes.length) { toast("The network is empty"); return; }
-    const packed = await pipe(new TextEncoder().encode(exportCode()), new CompressionStream("deflate-raw"));
-    const hash = "#net=" + toBase64Url(packed);
-    const url = location.href.replace(/[?#].*$/, "") + (asViewer ? "?view" : "") + hash;
+    const url = await netLink(asViewer);
     try {
       await navigator.clipboard.writeText(url);
       const long = url.length > 8000 && BNGist.available() ? ". That's long: Share ▾ › Publish to GitHub Gist makes a short one" : "";
@@ -1594,8 +1629,6 @@
     publish.hidden = !!done;
     publish.disabled = !!state.busy;
     publish.textContent = (BNGist.signedIn() ? "Publish" : "Sign in with GitHub and publish") + (state.error ? " again" : "");
-    $("#gist-copy").hidden = !done;
-    $("#gist-copy-viewer").hidden = !done;
     $("#gist-close").textContent = done ? "Close" : "Cancel";
     $("#gist-sign-out").hidden = !BNGist.signedIn();
   }
@@ -1730,6 +1763,12 @@
     share: () => toggleShareMenu(),
     "copy-link": () => { toggleShareMenu(false); shareLink(); },
     "copy-viewer-link": () => { toggleShareMenu(false); shareLink(true); },
+    "copy-embed": async () => {
+      toggleShareMenu(false);
+      if (!net.nodes.length) { toast("The network is empty"); return; }
+      copyEmbed(await netLink(true));
+    },
+    "gist-copy-embed": () => copyEmbed($("#gist-link").value.replace("?src=", "?view&src=")),
     "open-editor": openEditor,
     "gist-copy-viewer": async () => { await navigator.clipboard.writeText($("#gist-link").value.replace("?src=", "?view&src=")); toast("Copied the viewer link"); },
     gist: () => { toggleShareMenu(false); openGist(); },
@@ -1872,7 +1911,9 @@
 
   // Leaves the viewer for the full editor, keeping the evidence the reader set. From here the
   // network follows the editor's usual rules (a linked one is saved once it's changed).
-  function openEditor() {
+  async function openEditor() {
+    // Embedded in another page, the editor opens in a new tab, with the reader's evidence.
+    if (embedded) { window.open(await netLink(false), "_blank", "noopener"); return; }
     viewer = false;
     document.body.classList.remove("viewer");
     const url = new URL(location.href);

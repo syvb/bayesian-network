@@ -36,6 +36,7 @@
       <div id="share-menu" class="menu" role="menu" hidden>
         <button role="menuitem" data-action="copy-link"><b>Copy link</b><span>Opens in the editor. The network is inside the link itself; nothing is uploaded</span></button>
         <button role="menuitem" data-action="copy-viewer-link"><b>Copy viewer link</b><span>Opens full screen with just the probabilities: readers can set evidence but not edit, and can switch to the editor</span></button>
+        <button role="menuitem" data-action="copy-embed"><b>Copy embed code</b><span>An &lt;iframe&gt; of the viewer to paste into a web page or blog post</span></button>
         <button role="menuitem" data-action="gist" hidden><b>Publish to GitHub Gist…</b><span>Uploads an unlisted copy to your GitHub account for a short link</span></button>
       </div>
     </span>
@@ -136,6 +137,11 @@
       <div id="gist-status" class="import-result" role="status" hidden></div>
       <div id="gist-result" hidden>
         <input id="gist-link" readonly aria-label="Link to the shared network">
+        <div class="gist-copy-row">
+          <button type="button" data-action="gist-copy" class="primary" id="gist-copy">Copy link</button>
+          <button type="button" data-action="gist-copy-viewer" id="gist-copy-viewer" title="A link that opens full screen with just the probabilities, without the editing tools">Copy viewer link</button>
+          <button type="button" data-action="gist-copy-embed" id="gist-copy-embed" title="An iframe of the viewer, to paste into a web page">Copy embed code</button>
+        </div>
         <p class="muted"><a id="gist-page" target="_blank" rel="noopener">View or delete the gist on GitHub</a> · anyone with the link can see it.</p>
       </div>
       <div class="dialog-actions">
@@ -143,8 +149,6 @@
         <span class="grow"></span>
         <button value="close" id="gist-close">Cancel</button>
         <button type="button" data-action="gist-publish" class="primary" id="gist-publish">Sign in with GitHub and publish</button>
-        <button type="button" data-action="gist-copy-viewer" id="gist-copy-viewer" hidden title="A link that opens full screen with just the probabilities, without the editing tools">Copy viewer link</button>
-        <button type="button" data-action="gist-copy" class="primary" id="gist-copy" hidden>Copy link</button>
       </div>
     </form>
   </dialog>
