@@ -13,6 +13,7 @@
   const PROBS_KEY = "bn-editor-show-probabilities";
   const SOFT_KEY = "bn-editor-soft-evidence";
   const SOFT_KIND_KEY = "bn-editor-soft-kind";
+  const CLICK_KEY = "bn-editor-click-mode";
   const PANEL_KEY = "bn-editor-panel-collapsed";
   const NODE_H = 50;
   // probability view: header, then one row per state with a bar
@@ -41,6 +42,9 @@
   // How the soft evidence editor enters evidence: "likelihoods" or "probabilities" (targets).
   let softKind = localStorage.getItem(SOFT_KIND_KEY) === "probabilities" ? "probabilities" : "likelihoods";
   const isTarget = (v) => !!(v && v.target);
+  const isDo = (v) => !!(v && v.do !== undefined);
+  // What clicking a state does: "observe" (evidence) or "intervene" (do(node = state)).
+  let clickMode = localStorage.getItem(CLICK_KEY) === "intervene" ? "intervene" : "observe";
 
   // ?view opens the viewer: full screen probabilities without the editing tools, for sharing a
   // scenario. Readers can set evidence; nothing they do is saved until they open the editor.
@@ -448,7 +452,8 @@
       const p2 = boxExit(t, widths.get(t.id), f.x, f.y, 2);
       const sel = selArc && selArc.from === a.from && selArc.to === a.to;
       const d = `M${p1.x},${p1.y} L${p2.x},${p2.y}`;
-      parts.push(`<g class="arc${sel ? " selected" : ""}" data-from="${a.from}" data-to="${a.to}"><path class="hit" d="${d}"/><path class="line" d="${d}" marker-end="url(#${sel ? "arrow-sel" : "arrow"})"/></g>`);
+      const cut = inf && isDo(evidenceIndices().get(a.to));
+      parts.push(`<g class="arc${sel ? " selected" : ""}${cut ? " cut" : ""}" data-from="${a.from}" data-to="${a.to}"><path class="hit" d="${d}"/><path class="line" d="${d}" marker-end="url(#${sel ? "arrow-sel" : "arrow"})"/></g>`);
     }
     for (const n of net.nodes) {
       const { w, h } = widths.get(n.id);
@@ -456,7 +461,7 @@
       if (selNodes.has(n.id)) classes.push("selected");
       if (drag && drag.mode === "arc" && drag.target === n.id) classes.push("target");
       const observed = inf ? evidenceIndices().get(n.id) : undefined;
-      if (observed !== undefined) classes.push(typeof observed === "object" ? "soft-observed" : "observed");
+      if (observed !== undefined) classes.push(isDo(observed) ? "intervened" : typeof observed === "object" ? "soft-observed" : "observed");
       const bad = M.badRows(n).length > 0;
       let content;
       if (inf) {
@@ -469,7 +474,7 @@
             const y = -h / 2 + head + s * PROB_ROW;
             const p = probs ? probs[s] : null;
             const pct = p === null ? "–" : p >= 0.9995 ? "100%" : (p * 100).toFixed(1) + "%";
-            return `<g class="state-row${observed === s ? " observed" : ""}" data-state="${s}">` +
+            return `<g class="state-row${observed === s ? " observed" : isDo(observed) && observed.do === s ? " intervened" : ""}" data-state="${s}">` +
               `<rect class="row-hit" x="${-w / 2 + 4}" y="${y}" width="${w - 8}" height="${PROB_ROW}" rx="3"/>` +
               `<text class="slabel" x="${-w / 2 + 10}" y="${y + 13}">${esc(truncate(l, "12px system-ui, sans-serif", lw))}</text>` +
               `<rect class="pbar-bg" x="${barX}" y="${y + 4}" width="${barW}" height="10" rx="2"/>` +
@@ -481,7 +486,7 @@
         content = nameSvg(n, -3 - (lines - 1) * NAME_LH / 2) +
           `<text class="states" text-anchor="middle" y="${14 + (lines - 1) * NAME_LH / 2}">${esc(truncate(n.labels.join(" · "), "11px system-ui, sans-serif", w - 16))}</text>`;
       }
-      const tip = !showProbs ? "" : softMode ? "\nClick a state to enter soft evidence for this node" : "\nClick a state to set or clear it as evidence";
+      const tip = showProbs ? "\n" + clickHint() : "";
       parts.push(
         `<g class="${classes.join(" ")}" data-node="${n.id}" transform="translate(${n.x},${n.y})">` +
           // A node with a description gets the hover card instead of the browser's slower tooltip.
@@ -520,7 +525,10 @@
     for (const [id, v] of labels) {
       const n = M.getNode(net, id);
       if (!n) continue;
-      if (Array.isArray(v)) {
+      if (isDo(v)) {
+        const s = n.labels.indexOf(v.do);
+        if (s >= 0) out.set(id, { do: s });
+      } else if (Array.isArray(v)) {
         if (v.length === n.labels.length && v.some((x) => x > 0)) out.set(id, v.slice());
       } else if (isTarget(v)) {
         const sum = v.target.reduce((a, b) => a + b, 0);
@@ -546,7 +554,7 @@
       return;
     }
     updateEntry(netId, { edited: true });
-    store(evidenceKey(netId), JSON.stringify([...evidenceIndices()].map(([id, v]) => [id, typeof v === "object" ? v : M.getNode(net, id).labels[v]])));
+    store(evidenceKey(netId), JSON.stringify([...evidenceIndices()].map(([id, v]) => [id, isDo(v) ? { do: M.getNode(net, id).labels[v.do] } : typeof v === "object" ? v : M.getNode(net, id).labels[v]])));
   }
 
   function setEvidence(next) {
@@ -557,6 +565,23 @@
     saveEvidence();
     render();
     return true;
+  }
+
+  function toggleIntervention(id, s) {
+    const n = M.getNode(net, id);
+    const next = new Map(evidence);
+    const cur = next.get(id);
+    if (isDo(cur) && cur.do === n.labels[s]) next.delete(id);
+    else next.set(id, { do: n.labels[s] });
+    if (softId === id) hideSoftEditor();
+    setEvidence(next);
+  }
+
+  // A click on state s of node id, in the current click mode.
+  function clickState(id, s) {
+    if (clickMode === "intervene") toggleIntervention(id, s);
+    else if (softMode) openSoftEditor(id, s);
+    else toggleEvidence(id, s);
   }
 
   function toggleEvidence(id, s) {
@@ -583,7 +608,12 @@
   }
 
   const fmtPct = (q) => +(q * 100).toPrecision(3) + "%";
-  const onlyTargets = (ev) => [...ev.values()].every(isTarget);
+  function clickHint() {
+    return clickMode === "intervene" ? "Click a state to set it by intervention, do(node = state)"
+      : softMode ? "Click a state to enter soft evidence for this node" : "Click a state to set or clear it as evidence";
+  }
+  // No observations: only probabilities set directly and interventions, so no P(evidence).
+  const onlyTargets = (ev) => [...ev.values()].every((v) => isTarget(v) || isDo(v));
 
   const evidenceBar = $("#evidence-bar");
   function renderEvidenceBar(inf) {
@@ -591,18 +621,28 @@
     if (evidenceBar.hidden) return;
     const ev = evidenceIndices();
     const fmtP = (p) => (p >= 0.001 ? +p.toPrecision(3) : p.toExponential(2));
-    const toggle = `<label class="check" title="Off: clicking a state observes it for certain. On: clicking a state opens an editor where you either set the node's probabilities directly, or give likelihoods: how likely the observation is under each of the node's states, as in pyAgrum's setEvidence({&quot;x&quot;: [0.2, 0.8]}).">` +
+    const mode = (m, label, title) => `<button type="button" class="small${clickMode === m ? " on" : ""}" data-click-mode="${m}" title="${title}">${label}</button>`;
+    const modes = `<span class="muted click-label">Click a state to</span><span class="seg-toggle">` +
+      mode("observe", "Observe", "Clicking a state observes it: you learn that it's true, which also tells you about its causes") +
+      mode("intervene", "Intervene", "Clicking a state sets it from outside, do(node = state): the arcs into it are cut, so it changes only what it causes. Use it to ask what would happen if you made something true") +
+      `</span>`;
+    const toggle = clickMode === "intervene" ? "" : `<label class="check" title="Off: clicking a state observes it for certain. On: clicking a state opens an editor where you either set the node's probabilities directly, or give likelihoods: how likely the observation is under each of the node's states, as in pyAgrum's setEvidence({&quot;x&quot;: [0.2, 0.8]}).">` +
       `<input type="checkbox" data-soft-mode${softMode ? " checked" : ""}> Soft evidence</label>`;
     let body;
     if (inf.error) {
       body = `<span class="warn">${esc(inf.error)}</span>`;
     } else if (!ev.size) {
-      body = `<span class="muted ev-hint">${softMode
+      body = `<span class="muted ev-hint">${clickMode === "intervene"
+        ? "Click a state to make it true from outside, do(node = state): the arcs into the node are cut, so you see only its effects, not what its causes would imply."
+        : softMode
         ? "Click a state in any node to enter soft evidence (probabilities or likelihoods) for that node."
         : "Click a state in any node to observe it; every other node then shows its updated probabilities."}</span>`;
     } else {
       const chip = ([id, v]) => {
         const n = M.getNode(net, id);
+        if (isDo(v)) {
+          return `<span class="ev-chip do" title="Intervention: ${esc(n.name)} is set to ${esc(n.labels[v.do])} from outside. The arcs into it are cut, so this says nothing about its causes.">do(${esc(n.name)} = ${esc(n.labels[v.do])})<button class="icon" data-clear-ev="${id}" title="Remove this intervention">✕</button></span>`;
+        }
         if (isTarget(v)) {
           const pcts = v.target.map(fmtPct).join(" : ");
           return `<span class="ev-chip soft" data-edit-ev="${id}" title="Soft evidence: the probabilities of ${esc(n.labels.join(" : "))} are set to ${pcts}. Click to edit.">${esc(n.name)} → ${pcts}<button class="icon" data-clear-ev="${id}" title="Remove this evidence">✕</button></span>`;
@@ -612,12 +652,20 @@
         return `<span class="ev-chip soft" data-edit-ev="${id}" title="Soft evidence: likelihood of the observation for ${esc(n.labels.join(" : "))}. Click to edit.">${esc(n.name)} ≈ ${lik}<button class="icon" data-clear-ev="${id}" title="Remove this evidence">✕</button></span>`;
       };
       body = `<span class="ev-label">Evidence</span>` + [...ev].map(chip).join("") +
-        (onlyTargets(ev) ? "" : `<span class="muted" title="Probability of all the evidence together, before observing it${[...ev.values()].some(isTarget) ? " (probabilities you set directly aren't observations, so they aren't included)" : ""}">P(evidence) = ${fmtP(inf.pEvidence)}</span>`) +
+        (onlyTargets(ev) ? "" : `<span class="muted" title="Probability of all the observations together, before observing them${[...ev.values()].some(isDo) ? ", given the interventions" : ""}${[...ev.values()].some(isTarget) ? " (probabilities you set directly aren't observations, so they aren't included)" : ""}">P(evidence) = ${fmtP(inf.pEvidence)}</span>`) +
         `<button class="small" data-clear-ev="all">Clear all</button>`;
     }
-    evidenceBar.innerHTML = body + `<span class="sep"></span>` + toggle;
+    evidenceBar.innerHTML = body + `<span class="sep"></span>` + modes + toggle;
   }
   evidenceBar.addEventListener("click", (e) => {
+    const m = e.target.closest("[data-click-mode]");
+    if (m) {
+      clickMode = m.dataset.clickMode;
+      localStorage.setItem(CLICK_KEY, clickMode);
+      if (clickMode === "intervene") closeSoftEditor();
+      render();
+      return;
+    }
     const b = e.target.closest("[data-clear-ev]");
     if (b) {
       const next = new Map(evidence);
@@ -858,7 +906,7 @@
     const n = id === null ? null : M.getNode(net, id);
     if (!n || !n.description || drag) { nodeTip.hidden = true; tipId = null; return; }
     if (tipId !== id) {
-      const hint = !showProbs ? "" : softMode ? "Click a state to enter soft evidence" : "Click a state to set or clear it as evidence";
+      const hint = showProbs ? clickHint() : "";
       nodeTip.innerHTML = `<b>${esc(n.name)}</b><p>${esc(n.description)}</p>` + (M.badRows(n).length ? `<p class="warn">CPT rows do not sum to 1</p>` : "") + (hint ? `<p class="muted">${hint}</p>` : "");
       tipId = id;
     }
@@ -917,15 +965,10 @@
     const d = drag;
     drag = null;
     svg.classList.remove("panning");
-    if (d.mode === "pan" && !d.moved && d.state) {
-      if (softMode) openSoftEditor(d.state.id, d.state.s);
-      else toggleEvidence(d.state.id, d.state.s);
-    } else if (d.mode === "pan" && !d.moved) select([]);
+    if (d.mode === "pan" && !d.moved && d.state) clickState(d.state.id, d.state.s);
+    else if (d.mode === "pan" && !d.moved) select([]);
     else if (d.mode === "move" && d.moved) { save(); render(); }
-    else if (d.mode === "move" && d.state) {
-      if (softMode) openSoftEditor(d.state.id, d.state.s);
-      else toggleEvidence(d.state.id, d.state.s);
-    }
+    else if (d.mode === "move" && d.state) clickState(d.state.id, d.state.s);
     else if (d.mode === "arc") {
       if (d.target) {
         if (M.hasArc(net, d.from, d.target)) { toast("That arc already exists"); render(); return; }
@@ -1159,6 +1202,7 @@
         <dt>Move</dt><dd>Drag nodes, or nudge with arrow keys. Drag empty space to pan, scroll to zoom, <kbd>F</kbd> to fit.</dd>
         <dt>CPTs</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (with “Keep rows summing to 1” on, the rest of the row is adjusted for you), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
         <dt>Probabilities &amp; evidence</dt><dd>With <b>Probabilities</b> on (<kbd>P</kbd>), every node shows the probability of each of its states, computed exactly from the CPTs. Click a state to observe it (for example “the grass is wet”); all other nodes update to the probabilities given that evidence. Click it again, or use the evidence bar, to clear it. Turn on <b>Soft evidence</b> in the evidence bar to set a node's probabilities directly, or to enter likelihoods for its states, instead of a certain observation.</dd>
+        <dt>Interventions</dt><dd>To ask what happens if you <i>make</i> something true, rather than learn that it is, switch the evidence bar to <b>Intervene</b> and click a state. That sets do(node = state): the arcs into the node are cut (shown dashed), so it changes only what it causes and says nothing about its causes. For example, do(law passed = yes) shows the law's own effect on crime, without the public sentiment that makes laws pass. Interventions and observations can be combined.</dd>
         <dt>Delete / duplicate</dt><dd><kbd>Del</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd>. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</dd>
         <dt>pyAgrum</dt><dd>Export writes <code>import pyagrum as gum</code> code; <kbd>Ctrl</kbd>+<kbd>S</kbd> downloads it. Import accepts that code, hand-written <code>gum.BayesNet</code> code, and <code>gum.fastBN</code>. Export can also save a PNG or SVG picture of the canvas (with probabilities, if shown) that has the network embedded, so the picture can be imported again. You can drop a .py, .png or .svg file on the canvas. To share a network, host one of those files somewhere that allows cross-origin downloads (e.g. a GitHub repo or gist) and link to this page with <code>?src=</code> followed by the file's URL.</dd>
       </dl>
@@ -1399,6 +1443,7 @@
     if (ev.size) {
       const text = "Evidence: " + [...ev].map(([id, v]) => {
         const n = M.getNode(net, id);
+        if (isDo(v)) return `do(${n.name} = ${n.labels[v.do]})`;
         if (isTarget(v)) return `${n.name} → ${v.target.map(fmtPct).join(" : ")}`;
         return Array.isArray(v) ? `${n.name} ≈ ${v.map((x) => +x.toPrecision(2)).join(" : ")}` : `${n.name} = ${n.labels[v]}`;
       }).join(", ");

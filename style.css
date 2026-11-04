@@ -12,6 +12,7 @@
   --arc: #6e7685;
   --grid: #e7e9ee;
   --observed: #d9480f;
+  --intervened: #7048e8;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -29,6 +30,7 @@
     --arc: #9aa2b1;
     --grid: #20242c;
     --observed: #ff8a4c;
+    --intervened: #a98bff;
   }
 }
 
@@ -637,3 +639,14 @@ body.viewer-loading #canvas-wrap { visibility: hidden; }
 .node .info text { fill: var(--accent); font: italic 700 10px Georgia, serif; }
 /* Embedded in another page, the viewer shows just the network's name, without the app name. */
 body.embedded.viewer .toolbar .brand { display: none; }
+
+/* Interventions, do(node = state): purple, with the arcs into the node cut (dashed and faded). */
+.node.intervened rect.body { stroke: var(--intervened); stroke-width: 2.5; }
+.node.intervened.selected rect.body { stroke: var(--accent); }
+.node .state-row.intervened .row-hit { fill: color-mix(in srgb, var(--intervened) 15%, transparent); }
+.node .state-row.intervened .slabel, .node .state-row.intervened .pct { font-weight: 700; fill: var(--intervened); }
+.node .state-row.intervened .pbar { fill: var(--intervened); }
+.arc.cut path.line { stroke-dasharray: 5 5; opacity: 0.35; }
+.ev-chip.do { background: color-mix(in srgb, var(--intervened) 15%, transparent); }
+#evidence-bar .click-label { white-space: nowrap; }
+#evidence-bar .seg-toggle button.on[data-click-mode="intervene"] { border-color: var(--intervened); background: color-mix(in srgb, var(--intervened) 15%, transparent); }

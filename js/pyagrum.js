@@ -55,9 +55,13 @@
     const saved = {}, calls = [], notes = [];
     const targets = [...evidence].some(([, v]) => v && v.target);
     const solved = targets && globalThis.BNInference ? globalThis.BNInference.posteriors(net, evidence) : null;
+    const doing = [];
     for (const [id, v] of evidence) {
       const n = M.getNode(net, id);
-      if (v && v.target) {
+      if (v && v.do !== undefined) {
+        saved[n.name] = { do: n.labels[v.do] };
+        doing.push([n, v.do]);
+      } else if (v && v.target) {
         saved[n.name] = { target: v.target };
         const lik = solved && solved.likelihoods && solved.likelihoods.get(id);
         if (lik) {
@@ -70,8 +74,26 @@
       }
     }
     const out = ["# Evidence set in the editor. With it, pyAgrum computes the probabilities the editor shows."];
+    // Interventions, do(x = state), act on a copy of the network with the arcs into x cut and x
+    // fixed to that state (Pearl's graph surgery); the observations are then set on that copy.
+    let model = "bn";
+    if (doing.length) {
+      model = "bn_do";
+      out.push(`# Interventions: ${doing.map(([n, s]) => `do(${n.name} = ${n.labels[s]})`).join(", ")}. Each node is set from outside,`,
+        "# so the arcs into it are cut and its state is fixed: it says nothing about its causes.",
+        "bn_do = gum.BayesNet(bn)");
+      for (const [n, s] of doing) {
+        for (const p of M.parentsOf(net, n.id)) out.push(`bn_do.eraseArc(${py(M.getNode(net, p).name)}, ${py(n.name)})`);
+        out.push(`bn_do.cpt(${py(n.name)}).fillWith(${list(n.labels.map((_, k) => (k === s ? 1 : 0)), num)})`);
+      }
+    }
     // Skip the calls when the probabilities can't be reached: setEvidence would then apply only part of the evidence.
-    if (calls.length && !(targets && !(solved && solved.likelihoods))) out.push(...notes, "ie = gum.LazyPropagation(bn)", `ie.setEvidence({${calls.join(", ")}})`, "ie.makeInference()");
+    const reachable = !(targets && !(solved && solved.likelihoods));
+    if ((calls.length || doing.length) && reachable) {
+      out.push(...notes, `ie = gum.LazyPropagation(${model})`);
+      if (calls.length) out.push(`ie.setEvidence({${calls.join(", ")}})`);
+      out.push("ie.makeInference()");
+    }
     out.push(EVIDENCE_TAG + " " + JSON.stringify(saved));
     return out;
   }
@@ -680,7 +702,9 @@
         (funcs.length ? `. The script only defines functions (${funcs.slice(0, 5).join(", ")}${funcs.length > 5 ? ", …" : ""}); add a line that calls the one that builds the network, e.g. bn = ${funcs[0].replace("()", "(...)")}` : ""));
       return { net: null, warnings: warnings.concat(capWarnings(lineWarnings)), layout, networks: [], picked: -1 };
     }
-    const nonEmpty = bns.filter((b) => b.net.nodes.length);
+    // The copy an export makes for interventions (bn_do) isn't a network of its own.
+    const doCopy = evidence && [...result.globals].find(([k]) => k === "bn_do")?.[1];
+    const nonEmpty = bns.filter((b) => b.net.nodes.length && b !== doCopy);
     const candidates = nonEmpty.length ? nonEmpty : bns;
     const varName = (b) => [...result.globals].find(([, v]) => v === b)?.[0];
     const networks = candidates.map((b) => ({ label: varName(b) || b.net.name, nodes: b.net.nodes.length, arcs: b.net.arcs.length }));

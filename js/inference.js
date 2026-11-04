@@ -159,9 +159,17 @@
   // Target evidence is turned into the likelihoods that produce it, found by iterative
   // proportional fitting, one target at a time (one step for a single target), finished with damped
   // Newton steps when the targets are strongly coupled.
+  //   {do: state index}: an intervention, do(node = state): the node is set from outside, so
+  //     the arcs into it are cut and it's fixed to that state (Pearl's graph surgery). Unlike an
+  //     observation, it tells nothing about the node's causes.
   // Returns {marginals: Map(id -> number[]), pEvidence, likelihoods: Map(id -> number[])} or {error}.
-  // pEvidence covers only the hard and likelihood evidence.
+  // pEvidence covers only the hard and likelihood evidence (given the interventions).
   function posteriors(net, evidence = new Map()) {
+    const isDo = (v) => v && v.do !== undefined;
+    if ([...evidence.values()].some(isDo)) {
+      net = intervene(net, new Map([...evidence].filter(([, v]) => isDo(v)).map(([id, v]) => [id, v.do])));
+      evidence = new Map([...evidence].filter(([, v]) => !isDo(v)));
+    }
     const targets = [...evidence].filter(([, v]) => v && v.target);
     if (!targets.length) return exact(net, evidence);
     const plain = new Map([...evidence].filter(([, v]) => !(v && v.target)));
@@ -294,5 +302,15 @@
     return { error: `This evidence is impossible: the target probabilities for ${names} give probability to a state that the rest of the model rules out.` };
   }
 
-  globalThis.BNInference = { posteriors };
+  // The network after the interventions in `doing` (node id -> state index): no arcs into those
+  // nodes, and each one's CPT is certain of its state. Shares everything else with `net`.
+  function intervene(net, doing) {
+    return {
+      ...net,
+      nodes: net.nodes.map((n) => (doing.has(n.id) ? { ...n, cpt: n.labels.map((_, s) => (s === doing.get(n.id) ? 1 : 0)) } : n)),
+      arcs: net.arcs.filter((a) => !doing.has(a.to)),
+    };
+  }
+
+  globalThis.BNInference = { posteriors, intervene };
 })();
