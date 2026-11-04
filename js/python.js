@@ -765,14 +765,21 @@
   }
 
   // A numpy array, stored as nested JS arrays.
-  // A numpy array as nested JS arrays. dtype is "float", "int" or "bool": values written into an
-  // int or bool array are converted, as numpy does. shared marks an array that shares its data with
-  // a slice, transpose or reshape of it (a numpy view); writing to either is refused, since these
-  // copies don't share data the way numpy views do. (Rows picked by integer index, x[0], are the
-  // same JS arrays, so they do behave as views.)
+  // A numpy array as nested JS arrays. dtype is "float", "int", "bool" or "num". Numbers here are
+  // JS numbers, so 1 and 1.0 look the same: an array of whole numbers whose int or float type
+  // isn't known for certain is "num", and whatever would come out differently for the two (a
+  // fractional result written into it) is refused. Values written into an int or bool array are
+  // converted, as numpy does.
   class NdArray {
-    constructor(data, dtype = "float") { this.data = data; this.dtype = dtype; this.shared = false; }
+    constructor(data, dtype = "float") { this.data = data; this.dtype = dtype; }
   }
+  // The dtype of numbers from Python values: whole numbers might be ints or floats.
+  function inferDtype(data) {
+    const flat = flatten(data);
+    if (flat.length && flat.every((v) => typeof v === "boolean")) return "bool";
+    return flat.every((v) => typeof v === "boolean" || Number.isInteger(v)) ? "num" : "float";
+  }
+  const AMBIGUOUS = "The array holds whole numbers, and the importer can't tell whether they are ints or floats (1 or 1.0), which changes this result; make the type explicit, for example np.array([...], dtype=float)";
 
   class PyFunction {
     constructor(name, params, body, closure, isLambda) { Object.assign(this, { name, params, body, closure, isLambda }); }
@@ -970,7 +977,14 @@
     return rec(A, B, 0);
   }
 
-  const dtypeOf = (v) => (v instanceof NdArray ? v.dtype : typeof v === "boolean" ? "bool" : Number.isInteger(v) ? "int" : "float");
+  const dtypeOf = (v) => (v instanceof NdArray ? v.dtype : Array.isArray(v) ? inferDtype(v) : typeof v === "boolean" ? "bool" : Number.isInteger(v) ? "num" : "float");
+  // numpy's result type for arithmetic, with "num" (int or float, unknown) where it depends on that
+  function resultDtype(op, a, b) {
+    const da = dtypeOf(a), db = dtypeOf(b);
+    if (da === "float" || db === "float" || op === "/" || op === "**") return "float";
+    if (da === "num" || db === "num") return "num";
+    return "int";
+  }
 
   // Elementwise numpy arithmetic and comparisons, with broadcasting.
   function elementwise(op, a, b) {
@@ -978,8 +992,7 @@
     const f = cmp
       ? (x, y) => { x = toNumber(x); y = toNumber(y); return op === "==" ? x === y : op === "!=" ? x !== y : op === "<" ? x < y : op === ">" ? x > y : op === "<=" ? x <= y : x >= y; }
       : (x, y) => numOp(op, x, y);
-    const ints = dtypeOf(a) !== "float" && dtypeOf(b) !== "float" && !["/", "**"].includes(op);
-    return new NdArray(broadcast(f, ndData(a), ndData(b)), cmp ? "bool" : ints ? "int" : "float");
+    return new NdArray(broadcast(f, ndData(a), ndData(b)), cmp ? "bool" : resultDtype(op, a, b));
   }
 
   function binop(op, a, b) {
@@ -1145,11 +1158,15 @@
     if (v instanceof HostObject) return v.iter();
     throw new PyError(`'${typeName(v)}' object is not iterable`);
   }
-  const wrapNd = (x) => (Array.isArray(x) ? new NdArray(x) : x);
+  // Data that a slice, transpose or reshape copied (and the copy). In numpy those are views of
+  // the same memory, but here they're copies, so writing to any part of either, under whatever
+  // name (a row taken by x[0] before or after, a loop variable), is refused.
+  const sharedData = new WeakSet();
+  const markShared = (d) => { if (Array.isArray(d) && !sharedData.has(d)) { sharedData.add(d); d.forEach(markShared); } };
   function viewOf(base, data) {
-    const v = new NdArray(data, base.dtype);
-    base.shared = v.shared = true;
-    return v;
+    markShared(base.data);
+    markShared(data);
+    return new NdArray(data, base.dtype);
   }
 
   function sliceIndices(n, sl) {
@@ -1198,6 +1215,7 @@
   function ndSet(data, keys, value, dtype) {
     const conv = (x) => {
       if (Array.isArray(x)) throw new PyError("ValueError: setting an array element with a sequence");
+      if (dtype === "num" && !Number.isInteger(toNumber(x))) throw new UnsupportedError(AMBIGUOUS);
       return dtype === "int" ? Math.trunc(toNumber(x)) : dtype === "bool" ? truthy(x) : toNumber(x);
     };
     // the part of v that goes to element j of an axis of length n, in a region with `dims` axes
@@ -1233,7 +1251,7 @@
     set(data, keys, ndData(value));
   }
   const refuseShared = (a) => {
-    if (a.shared) throw new UnsupportedError("Changing a NumPy array that shares its data with a slice, transpose or reshape of it isn't supported (use .copy())");
+    if (sharedData.has(a.data)) throw new UnsupportedError("Changing a NumPy array that shares its data with a slice, transpose or reshape of it isn't supported (use .copy())");
   };
 
   function getItem(obj, key) {
@@ -1824,6 +1842,9 @@
           if (cur instanceof NdArray && Array.isArray(cur.data)) {
             refuseShared(cur);
             const r = binop(s.op, cur, v);
+            // numpy keeps the array's dtype, and refuses to cast a float result into an int array
+            if (cur.dtype === "int" && r.dtype === "float") throw new PyError(`UFuncTypeError: Cannot cast ufunc output from dtype('float64') to dtype('int64') with casting rule 'same_kind'`);
+            if ((cur.dtype === "int" && r.dtype === "num") || (cur.dtype === "num" && r.dtype === "float")) throw new UnsupportedError(AMBIGUOUS);
             if (shapeOf(r.data).join() !== shapeOf(cur.data).join()) throw new PyError("ValueError: non-broadcastable output operand");
             ndSet(cur.data, [new Slice(null, null, null)], r, cur.dtype);
             return;
@@ -2057,7 +2078,7 @@
       return best;
     };
     def("min", minmax(-1)); def("max", minmax(1));
-    def("abs", ([x]) => (x instanceof NdArray ? new NdArray(flatMap(x.data, Math.abs)) : Math.abs(toNumber(x))));
+    def("abs", ([x]) => (x instanceof NdArray ? new NdArray(flatMap(x.data, (v) => Math.abs(toNumber(v))), x.dtype === "bool" ? "int" : x.dtype) : Math.abs(toNumber(x))));
     def("round", ([x, nd]) => pyRound(x, nd));
     def("pow", ([a, c]) => toNumber(a) ** toNumber(c));
     def("divmod", ([a, c]) => tuple([Math.floor(a / c), pyMod(a, c)]));
@@ -2225,7 +2246,7 @@
       fn("randint", ([a, b, size]) => {
         const lo = b === undefined || b === null ? 0 : a, hi = b === undefined || b === null ? a : b;
         const one = () => lo + Math.floor(rand() * (hi - lo));
-        return size === undefined ? one() : new NdArray(filled(shapeArg(size), one));
+        return size === undefined ? one() : new NdArray(filled(shapeArg(size), one), "int");
       }),
       fn("choice", ([seq]) => { const l = typeof seq === "number" ? Array.from({ length: seq }, (_, i) => i) : iterate(seq); return l[Math.floor(rand() * l.length)]; }),
       fn("dirichlet", ([alpha]) => {
@@ -2241,19 +2262,19 @@
       return Module.prototype.getattr.call(this, name);
     };
     return new Module("numpy", new Map([
-      fn("array", ([x, dt], kw) => { const d = dt ?? kw.get("dtype"); const a = new NdArray(structuredClone(ndData(x)), x instanceof NdArray ? x.dtype : flatten(ndData(x)).every((v) => typeof v === "boolean") ? "bool" : flatten(ndData(x)).every((v) => Number.isInteger(v)) ? "int" : "float"); shapeOf(a.data); return d === undefined || d === null ? a : astype(a, d); }),
-      fn("asarray", ([x]) => (x instanceof NdArray ? x : new NdArray(structuredClone(ndData(x))))),
+      fn("array", ([x, dt], kw) => { const d = dt ?? kw.get("dtype"); const a = new NdArray(structuredClone(ndData(x)), x instanceof NdArray ? x.dtype : inferDtype(ndData(x))); shapeOf(a.data); return d === undefined || d === null ? a : astype(a, d); }),
+      fn("asarray", ([x]) => (x instanceof NdArray ? x : new NdArray(structuredClone(ndData(x)), inferDtype(ndData(x))))),
       fn("zeros", ([s]) => new NdArray(filled(shapeArg(s), () => 0))),
       fn("empty", ([s]) => new NdArray(filled(shapeArg(s), () => 0))),
       fn("ones", ([s]) => new NdArray(filled(shapeArg(s), () => 1))),
-      fn("full", ([s, v]) => new NdArray(filled(shapeArg(s), () => v))),
-      fn("zeros_like", ([a]) => new NdArray(flatMap(ndData(a), () => 0))),
-      fn("ones_like", ([a]) => new NdArray(flatMap(ndData(a), () => 1))),
+      fn("full", ([s, v]) => new NdArray(filled(shapeArg(s), () => v), inferDtype([v]))),
+      fn("zeros_like", ([a]) => new NdArray(flatMap(ndData(a), () => 0), dtypeOf(a))),
+      fn("ones_like", ([a]) => new NdArray(flatMap(ndData(a), () => 1), dtypeOf(a))),
       fn("arange", (a) => {
         const [start, stop, step = 1] = a.length > 1 ? a : [0, a[0]];
         const n = Math.max(0, Math.ceil((stop - start) / step));
         checkSize(n);
-        return new NdArray(Array.from({ length: n }, (_, i) => start + i * step));
+        return new NdArray(Array.from({ length: n }, (_, i) => start + i * step), inferDtype([start, stop, step]));
       }),
       fn("linspace", ([a, b, n = 50]) => checkSize(n) || new NdArray(Array.from({ length: n }, (_, i) => (n === 1 ? a : a + ((b - a) * i) / (n - 1))))),
       fn("sum", ([a, axis], kw) => reduceAxis(a, axis ?? kw.get("axis") ?? null, "sum")),
@@ -2263,15 +2284,19 @@
       fn("amax", ([a, axis], kw) => reduceAxis(a, axis ?? kw.get("axis") ?? null, "max")),
       fn("amin", ([a, axis], kw) => reduceAxis(a, axis ?? kw.get("axis") ?? null, "min")),
       fn("prod", ([a, axis], kw) => { if ((axis ?? kw.get("axis") ?? null) !== null) throw new UnsupportedError("np.prod with an axis isn't supported"); return flatten(ndData(a)).reduce((x, y) => x * y, 1); }),
-      fn("concatenate", ([arrs]) => new NdArray(iterate(arrs).flatMap((x) => structuredClone(ndData(x))))),
-      fn("reshape", ([a, s]) => (a instanceof NdArray ? viewOf(a, reshape(flatten(a.data), shapeArg(s))) : new NdArray(reshape(flatten(ndData(a)), shapeArg(s))))),
-      fn("transpose", ([a]) => (a instanceof NdArray ? viewOf(a, transpose(a.data)) : new NdArray(transpose(ndData(a))))),
-      fn("round", ([a, nd = 0]) => (a instanceof NdArray ? new NdArray(flatMap(a.data, (v) => pyRound(v, nd))) : pyRound(a, nd))),
-      fn("clip", ([a, lo, hi]) => (a instanceof NdArray ? new NdArray(flatMap(a.data, (v) => Math.min(Math.max(v, lo), hi))) : Math.min(Math.max(a, lo), hi))),
+      fn("concatenate", ([arrs]) => {
+        const parts = iterate(arrs), types = new Set(parts.map(dtypeOf));
+        return new NdArray(parts.flatMap((x) => structuredClone(ndData(x))), types.has("float") ? "float" : types.size === 1 ? [...types][0] : "num");
+      }),
+      fn("reshape", ([a, s]) => (a instanceof NdArray ? viewOf(a, reshape(flatten(a.data), shapeArg(s))) : new NdArray(reshape(flatten(ndData(a)), shapeArg(s)), inferDtype(ndData(a))))),
+      fn("transpose", ([a]) => (a instanceof NdArray ? viewOf(a, transpose(a.data)) : new NdArray(transpose(ndData(a)), inferDtype(ndData(a))))),
+      fn("round", ([a, nd = 0]) => (a instanceof NdArray ? new NdArray(flatMap(a.data, (v) => pyRound(v, nd)), a.dtype) : pyRound(a, nd))),
+      fn("clip", ([a, lo, hi]) => (a instanceof NdArray ? new NdArray(flatMap(a.data, (v) => Math.min(Math.max(v, lo), hi)), resultDtype("+", a, resultDtype("+", lo, hi) === "float" ? 0.5 : 0)) : Math.min(Math.max(a, lo), hi))),
       fn("isclose", ([a, b]) => Math.abs(a - b) <= 1e-8 + 1e-5 * Math.abs(b)),
-      fn("maximum", ([a, b]) => (a instanceof NdArray || b instanceof NdArray || Array.isArray(a) || Array.isArray(b) ? new NdArray(broadcast((x, y) => Math.max(toNumber(x), toNumber(y)), ndData(a), ndData(b))) : Math.max(a, b))),
-      fn("minimum", ([a, b]) => (a instanceof NdArray || b instanceof NdArray || Array.isArray(a) || Array.isArray(b) ? new NdArray(broadcast((x, y) => Math.min(toNumber(x), toNumber(y)), ndData(a), ndData(b))) : Math.min(a, b))),
-      unaryNp("exp", Math.exp), unaryNp("log", Math.log), unaryNp("sqrt", Math.sqrt), unaryNp("abs", Math.abs),
+      fn("maximum", ([a, b]) => (a instanceof NdArray || b instanceof NdArray || Array.isArray(a) || Array.isArray(b) ? new NdArray(broadcast((x, y) => Math.max(toNumber(x), toNumber(y)), ndData(a), ndData(b)), resultDtype("+", a, b)) : Math.max(a, b))),
+      fn("minimum", ([a, b]) => (a instanceof NdArray || b instanceof NdArray || Array.isArray(a) || Array.isArray(b) ? new NdArray(broadcast((x, y) => Math.min(toNumber(x), toNumber(y)), ndData(a), ndData(b)), resultDtype("+", a, b)) : Math.min(a, b))),
+      unaryNp("exp", Math.exp), unaryNp("log", Math.log), unaryNp("sqrt", Math.sqrt),
+      fn("abs", ([x]) => (x instanceof NdArray || Array.isArray(x) ? new NdArray(flatMap(ndData(x), (v) => Math.abs(toNumber(v))), dtypeOf(x) === "bool" ? "int" : dtypeOf(x)) : Math.abs(toNumber(x)))),
       unaryNp("floor", Math.floor), unaryNp("ceil", Math.ceil), unaryNp("log10", Math.log10), unaryNp("log2", Math.log2),
       unaryNp("sin", Math.sin), unaryNp("cos", Math.cos), unaryNp("tanh", Math.tanh),
       ["pi", Math.PI], ["e", Math.E], ["inf", Infinity], ["nan", NaN],
