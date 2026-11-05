@@ -47,7 +47,8 @@
       return true;
     } catch { return false; }
   })();
-  if (!storageWorks || !navigator.locks) document.body.classList.add("no-storage");
+  const tabsSupported = () => !!navigator.locks && typeof BroadcastChannel === "function";
+  if (!storageWorks || !tabsSupported()) document.body.classList.add("no-storage");
 
   let net = M.createNetwork("Untitled"); // renderable while asynchronous startup owns storage
   let selNodes = new Set();
@@ -172,13 +173,30 @@
 
   // Another tab wants a network: give it up if it's ours (after saving), and don't take it back
   // until this tab is used again.
-  // A tab gives way (whether it has the network or is waiting for it) only to a tab used more
-  // recently, so the tab you used last ends up with it, and a stale request can't steal it.
-  let claimedAt = 0;
-  const want = (id) => channel?.postMessage({ want: id, at: claimedAt });
+  // A tab gives way (whether it has the network or is waiting for it) only to a newer claim, so
+  // the tab you used last ends up with it and a stale request can't steal it. Claims are ordered
+  // by a token that is never below any token this tab has seen (so a clock set back can't make a
+  // new claim look old), with ties broken by a random per-tab tag.
+  const tabTag = Math.random();
+  let claimedAt = 0, seen = 0;
+  const nextToken = () => (claimedAt = seen = Math.max(Date.now(), seen + 1));
+  const beats = (at, tag) => at > claimedAt || (at === claimedAt && tag > tabTag);
+  const want = (id) => channel?.postMessage({ want: id, at: claimedAt, tag: tabTag });
   channel?.addEventListener("message", (e) => {
-    if (!started || viewer || e.data?.want == null || e.data.want !== netId) return;
-    if ((ownedId !== netId && !pendingLock) || !(e.data.at > claimedAt)) return;
+    const d = e.data;
+    if (typeof d?.at === "number") seen = Math.max(seen, d.at);
+    if (!started || viewer) return;
+    if (d?.refused != null) {
+      // The owner thought its own claim was newer (say, the clock went back). If you're using
+      // this tab, claim again: the new token is above the owner's, which this tab has now seen.
+      if (d.to === tabTag && d.refused === netId && pendingLock && document.hasFocus() && !document.hidden) claim();
+      return;
+    }
+    if (d?.want == null || d.want !== netId || (ownedId !== netId && !pendingLock)) return;
+    if (!beats(d.at, d.tag)) {
+      if (ownedId === netId) channel.postMessage({ refused: netId, at: claimedAt, to: d.tag });
+      return;
+    }
     parked = true;
     leaveOwnership();
   });
@@ -187,7 +205,7 @@
   // network back from whichever tab has it.
   function claim() {
     if (viewer || !started) return;
-    claimedAt = Date.now();
+    nextToken();
     if (parked) { parked = false; window.dispatchEvent(new Event("bn-claim")); }
     takeOwnership();
   }
@@ -217,10 +235,7 @@
       want(netId);
       return pendingLock.ready;
     }
-    if (!navigator.locks) {
-      ownershipUI("Safe multi-tab editing requires a browser with Web Locks. Open this page over HTTPS or localhost.");
-      return Promise.resolve(false);
-    }
+    if (!tabsSupported()) return Promise.resolve(false);
     const id = netId, controller = new AbortController();
     let acquired;
     controller.ready = new Promise(resolve => { acquired = resolve; });
@@ -301,7 +316,7 @@
   async function editingReady(id = netId) {
     if (viewer) return true;
     while (id === netId) {
-      if (!navigator.locks) return false;
+      if (!tabsSupported()) return false;
       if (parked) await new Promise(resolve => window.addEventListener("bn-claim", resolve, { once: true }));
       if (id !== netId) return false;
       if (await takeOwnership() && id === netId && canEdit()) return true;
@@ -346,8 +361,8 @@
       if (!viewer && (switching || !canEdit())) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        // Using a tab whose network another tab has takes it back.
-        if (parked && (type === "pointerdown" || type === "keydown")) claim();
+        // Using a tab whose network another tab has (or is still saving) asks for it.
+        if ((parked || pendingLock) && !switching && (type === "pointerdown" || type === "keydown")) claim();
       }
     }, true);
   }
@@ -484,10 +499,15 @@
     }
   }
 
+  // The most recent network that no other tab has open (taking one from a tab you're using
+  // would only pause that tab), or a new one.
   async function nextNetwork() {
     await reloadNetworks();
-    const next = byRecent(readIndex())[0];
-    if (next) return enterNetwork(next.id);
+    for (const e of byRecent(readIndex())) {
+      if (e.id === netId) continue;
+      const free = await navigator.locks.request("bn-editor:network:" + e.id, { ifAvailable: true }, (lock) => !!lock);
+      if (free) return enterNetwork(e.id);
+    }
     const id = newId();
     return enterNetwork(id, makeRecord(id, M.createNetwork(untitledName())));
   }
@@ -514,6 +534,9 @@
     fit();
   }
 
+  // Deletes network `id` (with onlyBlank, only if it's still blank and unedited). Returns false
+  // when another tab has it open and doesn't hand it over: blank clean-up then just skips it, and
+  // a deletion asks that tab for it but gives up after a few seconds (it may be unable to save).
   async function removeNetwork(id, onlyBlank = false) {
     const remove = async () => {
       const current = await storage.get(id);
@@ -522,8 +545,24 @@
       records.delete(id);
       histories.delete(id);
     };
-    if (ownedId === id) await remove();
-    else await navigator.locks.request("bn-editor:network:" + id, remove);
+    if (ownedId === id) { await remove(); return true; }
+    const name = "bn-editor:network:" + id;
+    if (await navigator.locks.request(name, { ifAvailable: true }, async (lock) => lock && (await remove(), true))) return true;
+    if (onlyBlank) return false;
+    // Ask for it, and ask again with a newer token if the owner says its own claim is newer.
+    const retry = (e) => { if (e.data?.refused === id && e.data.to === tabTag) { nextToken(); want(id); } };
+    channel.addEventListener("message", retry);
+    nextToken();
+    want(id);
+    try {
+      await navigator.locks.request(name, { signal: AbortSignal.timeout(5000) }, remove);
+      return true;
+    } catch (error) {
+      if (error.name === "TimeoutError" || error.name === "AbortError") return false;
+      throw error;
+    } finally {
+      channel.removeEventListener("message", retry);
+    }
   }
 
   function untitledName() {
@@ -574,7 +613,10 @@
     const entry = readIndex().find((e) => e.id === id);
     if (!entry || !confirm(`Delete “${entry.name || "Untitled"}”? This can't be undone.`)) return;
     return navigate(async () => {
-      await removeNetwork(id);
+      if (!await removeNetwork(id)) {
+        toast("Couldn't delete it: another tab has it open and hasn't saved its changes. Try again, or close that tab.");
+        return false;
+      }
       if (id !== netId) return true;
       netId = null;
       record = null;
@@ -2675,8 +2717,8 @@
   async function start() {
     if (!viewer) {
       ownershipUI("Opening your networks…");
-      if (!navigator.locks) {
-        ownershipUI("Safe multi-tab editing requires a browser with Web Locks. Open this page over HTTPS or localhost.");
+      if (!tabsSupported()) {
+        ownershipUI("Safe multi-tab editing requires a browser with Web Locks and BroadcastChannel. Open this page over HTTPS or localhost in a current browser.");
         return;
       }
       // Serialize first-visit creation and migration, even when several tabs open at once.
@@ -2734,7 +2776,7 @@
   async function openEditor() {
     // Embedded in another page, the editor opens in a new tab, with the reader's evidence.
     if (embedded) { window.open(await netLink(false), "_blank", "noopener"); return; }
-    if (!storageWorks || !navigator.locks) return;
+    if (!storageWorks || !tabsSupported()) return;
     try { await navigator.locks.request("bn-editor:startup", migrateIndex); }
     catch { toast("Couldn't open your saved networks. Check browser storage permissions and try again."); return; }
     viewer = false;

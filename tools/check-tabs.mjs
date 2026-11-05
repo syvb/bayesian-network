@@ -164,7 +164,10 @@ try {
   await ready(b);
   assert.notEqual((await network(b)).nodes[1].x, beforeMove.x);
   await a.mouse.up();
-  await ready(b); // Playwright focused A for its mouse input; switch back as a user would
+  // Playwright gave A focus for its mouse input (a real browser wouldn't), so A claims the
+  // network back; let that finish, then switch to B as a user would.
+  await a.waitForTimeout(300);
+  await ready(b);
   console.log("PASS drags: probability divider and node movement saved on handover without pointerup");
 
   await b.locator('[data-action="networks"]').click();
@@ -530,6 +533,101 @@ try {
   await noLocks.waitForFunction(() => document.querySelectorAll(".node").length > 0);
   assert.equal(await noLocks.locator("main").evaluate(el => el.inert), false);
   console.log("PASS unsupported Web Locks: editor safely blocked with explanation; viewer still usable");
+
+  {
+    const noChannel = await browser.newContext();
+    await noChannel.addInitScript(() => { delete window.BroadcastChannel; });
+    const page = await noChannel.newPage();
+    await page.goto(base);
+    await page.locator("#tab-status").waitFor({ state: "visible" });
+    assert.match(await page.locator("#tab-status").innerText(), /BroadcastChannel/);
+    assert.equal(await page.locator("main").evaluate(el => el.inert), true);
+    await noChannel.close();
+    console.log("PASS unsupported BroadcastChannel: editor blocked with explanation instead of later tabs waiting forever");
+  }
+
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const open = async (url = base, init) => {
+      const page = await ctx.newPage();
+      sessions.set(page, await ctx.newCDPSession(page));
+      if (init) await page.addInitScript(...init);
+      await page.goto(url);
+      return page;
+    };
+    const current = page => page.evaluate(() => sessionStorage.getItem("bn-editor-current"));
+    const editable = page => page.waitForFunction(() => !document.querySelector("main").inert, null, { timeout: 8000 });
+    const A = await open(); await ready(A);
+    const x = await current(A);
+
+    // A waiting tab that never gets focus (Safari) asks for the network when you click in it.
+    const W = await open(base, [x => {
+      sessionStorage.setItem("bn-editor-current", x);
+      Document.prototype.hasFocus = () => false;
+      window.addEventListener("focus", e => e.stopImmediatePropagation(), true);
+    }, x]);
+    await W.waitForFunction(() => document.querySelector("main").inert && /Waiting/.test(document.querySelector("#tab-status").textContent));
+    await W.waitForTimeout(300);
+    assert.equal(await W.locator("main").evaluate(el => el.inert), true);
+    await W.mouse.click(600, 400);
+    await editable(W);
+    assert.equal(await current(W), x);
+    await W.close();
+    console.log("PASS waiting tab: a click asks for the network even without focus events");
+
+    // A clock set back can't leave the tab you're using waiting forever.
+    await ready(A);
+    const B = await open(base, [x => sessionStorage.setItem("bn-editor-current", x), x]);
+    await B.evaluate(() => { const now = Date.now; Date.now = () => now() - 3600e3; });
+    await ready(B);
+    assert.equal(await current(B), x);
+    console.log("PASS clock set back: the tab in use still takes the network");
+
+    // Deleting a network another tab has open asks that tab for it instead of freezing.
+    await B.locator('[data-action="networks"]').click();
+    await B.locator('[data-action="new"]').click();
+    await ready(B);
+    await ready(A); // A has x again
+    await ready(B);
+    B.once("dialog", d => d.accept());
+    await B.locator('[data-action="networks"]').click();
+    await B.locator(`[data-delete-net="${x}"]`).click();
+    await B.waitForFunction(async id => !(await (await BNStorage.open()).get(id)), x, { timeout: 5000 });
+    await editable(B);
+    await ready(A);
+    await A.waitForFunction(x => sessionStorage.getItem("bn-editor-current") !== x && !document.querySelector("main").inert, x, { timeout: 5000 });
+    console.log("PASS deletion: a network open in another tab is handed over and deleted, without freezing");
+
+    // ...and when that tab can't save, deletion gives up with a message instead of freezing.
+    await ready(B);
+    await B.keyboard.press("Escape"); // the menu stays open after a deletion
+    await B.locator('[data-action="networks"]').click();
+    await B.locator('[data-action="new"]').click();
+    await ready(B);
+    await rename(B, "B's own network");
+    const C = await open(); await ready(C);
+    await C.locator('[data-action="networks"]').click();
+    await C.locator('[data-action="new"]').click();
+    await ready(C);
+    await rename(C, "Owned by C");
+    const z = await current(C);
+    await C.waitForFunction(async id => (await (await BNStorage.open()).get(id))?.net.name === "Owned by C", z);
+    await C.evaluate(() => {
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (...args) { const r = put.apply(this, args); if (this.name === "networks") r.addEventListener("success", () => this.transaction.abort()); return r; };
+    });
+    await rename(C, "Can't be saved");
+    await ready(B);
+    B.once("dialog", d => d.accept());
+    await B.locator('[data-action="networks"]').click();
+    await B.locator(`[data-delete-net="${z}"]`).click();
+    await B.waitForFunction(() => /Couldn't delete it/.test(document.querySelector("#toast")?.textContent), null, { timeout: 9000 });
+    await editable(B);
+    assert.ok(await B.evaluate(async id => !!(await (await BNStorage.open()).get(id)), z));
+    assert.equal((await network(C)).name, "Can't be saved");
+    await ctx.close();
+    console.log("PASS deletion refused: a tab that can't save keeps its network; the deleting tab says so and stays usable");
+  }
 
   {
     // Safari can open a link in a new window that reports no focus and never fires a focus
