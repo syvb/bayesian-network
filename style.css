@@ -719,6 +719,10 @@ body.embedded.viewer .toolbar .brand { display: none; }
 .panel-title h2 { margin-bottom: 0; }
 button.small.on { color: var(--accent); border-color: var(--accent); }
 
+/* Ownership is normally invisible; parked tabs and delayed handovers explain why editing pauses. */
+#tab-status { position: fixed; z-index: 100; bottom: 18px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px); padding: 10px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); box-shadow: 0 4px 16px rgb(0 0 0 / 0.12); font-size: 13px; }
+#tab-status[hidden] { display: none; }
+
 /* ---------------------------------------------------------------- phones (mainly the viewer) */
 /* The viewer's node card on touchscreens: along the bottom of the canvas */
 #node-sheet { position: absolute; z-index: 5; left: 50%; bottom: 10px; transform: translateX(-50%); width: min(420px, calc(100% - 20px)); max-height: 55%; overflow-y: auto;

@@ -816,7 +816,10 @@
       scrollToFocus();
     }
 
-    return { render: (id) => render(id), focus, isEditing: () => !!edit || !!barDrag };
+    return {
+      render: (id) => render(id), focus, isEditing: () => !!edit || !!barDrag,
+      finishEditing: () => { commitEdit(); endBarDrag(); mouseSelecting = false; },
+    };
   }
 
   globalThis.BNCptEditor = { createCptEditor, parseProb };

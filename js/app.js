@@ -1,9 +1,10 @@
 (function () {
   "use strict";
   const M = globalThis.BNModel, P = globalThis.BNPyAgrum;
-  // Each network is saved under its own keys, listed in INDEX_KEY. Older versions kept one
-  // network in OLD_NET_KEY and OLD_EVIDENCE_KEY; it becomes the first network of the list.
+  // Network data and menu entries have separate per-network keys, so different tabs never
+  // read-modify-write a shared list. INDEX_KEY is migrated from older versions on startup.
   const INDEX_KEY = "bn-editor-networks";
+  const entryKey = (id) => "bn-editor-entry:" + id;
   const netKey = (id) => "bn-editor-net:" + id;
   const evidenceKey = (id) => "bn-editor-evidence:" + id;
   const CURRENT_KEY = "bn-editor-current"; // sessionStorage: this tab's network, kept on reload
@@ -48,9 +49,9 @@
       return true;
     } catch { return false; }
   })();
-  if (!storageWorks) document.body.classList.add("no-storage");
+  if (!storageWorks || !navigator.locks) document.body.classList.add("no-storage");
 
-  let net;
+  let net = M.createNetwork("Untitled"); // renderable while asynchronous startup owns storage
   let selNodes = new Set();
   let selArc = null; // {from, to}
   let view = { x: 0, y: 0, k: 1 };
@@ -96,13 +97,154 @@
   // Undo history of the other networks edited in this tab: id -> {undo, redo}.
   const histories = new Map();
 
+  let started = false, ownedId = null, releaseLock = null, pendingLock = null;
+  const tabStatus = document.createElement("div");
+  tabStatus.id = "tab-status";
+  tabStatus.setAttribute("role", "status");
+  tabStatus.hidden = true;
+  document.body.append(tabStatus);
+  const canEdit = () => viewer || (ownedId !== null && ownedId === netId);
+  const activeTab = () => document.hasFocus() && !document.hidden;
+
+  function ownershipUI(message = "") {
+    tabStatus.textContent = message;
+    tabStatus.hidden = !message;
+    for (const el of document.body.children) {
+      if (el !== tabStatus && el.tagName !== "SCRIPT") el.inert = !viewer && !canEdit();
+    }
+  }
+
+  // Finish edits while we still own the network. No saves or undo snapshots from this tab
+  // may escape into the next owner's session, including a drag whose pointerup never arrives.
+  function leaveOwnership() {
+    pendingLock?.abort();
+    pendingLock = null;
+    if (releaseLock) {
+      document.activeElement?.blur();
+      commitInline();
+      cpt.finishEditing();
+      if (drag) {
+        if (drag.mode === "move" && drag.moved) save();
+        drag = null;
+        touches.clear();
+        svg.classList.remove("panning");
+        render();
+      }
+      const release = releaseLock;
+      releaseLock = null;
+      ownedId = null;
+      release();
+    }
+    ownershipUI("Editing is paused. Focus this tab to continue.");
+  }
+
+  function takeOwnership() {
+    if (viewer || (ownedId !== null && ownedId === netId)) return Promise.resolve(true);
+    if (!started || !netId || !activeTab()) return Promise.resolve(false);
+    if (pendingLock) return pendingLock.ready;
+    if (!navigator.locks) {
+      ownershipUI("Safe multi-tab editing requires a browser with Web Locks. Open this page over HTTPS or localhost.");
+      return Promise.resolve(false);
+    }
+    const id = netId, controller = new AbortController();
+    let acquired;
+    controller.ready = new Promise(resolve => { acquired = resolve; });
+    pendingLock = controller;
+    ownershipUI("Finishing changes in another tab… If it is unresponsive, close that tab to continue.");
+    navigator.locks.request("bn-editor:network:" + id, { signal: controller.signal }, async () => {
+      if (controller.signal.aborted || id !== netId || !activeTab()) return;
+      pendingLock = null;
+      ownedId = id;
+      const held = new Promise(resolve => { releaseLock = resolve; });
+      if (!unsaved) {
+        const latest = readNet(id);
+        if (!latest) {
+          leaveOwnership();
+          netId = null;
+          undoStack = [];
+          redoStack = [];
+          const next = byRecent(readIndex())[0];
+          if (next) switchNetwork(next.id);
+          else openNetwork(M.createNetwork(untitledName()));
+          toast("This network was deleted in another tab.");
+          return;
+        }
+        const changed = JSON.stringify(latest) !== JSON.stringify(net);
+        let latestEvidence;
+        try { latestEvidence = new Map(JSON.parse(localStorage.getItem(evidenceKey(id))) || []); } catch { latestEvidence = new Map(); }
+        const evidenceChanged = JSON.stringify([...latestEvidence]) !== JSON.stringify([...evidence]);
+        if (changed || evidenceChanged) {
+          net = latest;
+          evidence = latestEvidence;
+          if (changed) {
+            undoStack = [];
+            redoStack = [];
+            importBefore = null;
+            $("#import-dialog").close();
+          }
+          hideSoftEditor();
+          inferenceCache = null;
+          pruneSelection();
+          render();
+          renderPanel();
+          cpt.render(cptNodeId());
+          updateButtons();
+          updateNetworkButton();
+          toast(changed ? "Updated from another tab. Undo history was cleared." : "Evidence updated from another tab.");
+        }
+      }
+      ownershipUI();
+      acquired(true);
+      await held;
+    }).catch(error => {
+      if (error.name !== "AbortError") {
+        leaveOwnership();
+        ownershipUI("Couldn't acquire editing ownership. Reload this tab to retry.");
+      }
+    }).finally(() => {
+      if (pendingLock === controller) pendingLock = null;
+      acquired(false);
+    });
+    return controller.ready;
+  }
+
+  async function editingReady(id = netId) {
+    if (viewer) return true;
+    while (id === netId) {
+      if (!navigator.locks) return false;
+      if (!activeTab()) await new Promise(resolve => window.addEventListener("focus", resolve, { once: true }));
+      if (id !== netId) return false;
+      if (await takeOwnership()) return true;
+      if (activeTab()) return false;
+    }
+    return false;
+  }
+
+  window.addEventListener("blur", () => { if (started && !viewer) leaveOwnership(); });
+  window.addEventListener("focus", takeOwnership);
+  window.addEventListener("pagehide", () => { if (started && !viewer) leaveOwnership(); });
+  window.addEventListener("pageshow", takeOwnership);
+  document.addEventListener("visibilitychange", () => {
+    if (!started || viewer) return;
+    if (document.hidden) leaveOwnership();
+    else takeOwnership();
+  });
+  // inert blocks controls; the capture guard also blocks document-level keyboard shortcuts.
+  for (const type of ["keydown", "pointerdown", "click", "dblclick", "drop", "paste"]) {
+    document.addEventListener(type, e => {
+      if (!viewer && !canEdit()) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true);
+  }
+
   let storageFullShown = false;
   function store(key, value) {
     try {
       localStorage.setItem(key, value);
+      return true;
     } catch {
       if (!storageFullShown) toast("The browser's storage for this page is full, so changes aren't being saved. Delete networks you don't need (network menu, top left).");
       storageFullShown = true;
+      return false;
     }
   }
 
@@ -110,18 +252,21 @@
   // demo a network was opened from; `edited` says whether it changed since.
   function readIndex() {
     if (viewer) return [];
-    try {
-      const list = JSON.parse(localStorage.getItem(INDEX_KEY));
-      if (Array.isArray(list)) return list;
-    } catch {}
-    return [];
+    const list = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key?.startsWith("bn-editor-entry:")) continue;
+      try {
+        const entry = JSON.parse(localStorage.getItem(key));
+        if (entry?.id) list.push(entry);
+      } catch {}
+    }
+    return list;
   }
   function updateEntry(id, fields) {
-    const list = readIndex();
-    const entry = list.find((e) => e.id === id);
-    if (entry) Object.assign(entry, fields);
-    else list.push({ id, name: "", nodes: 0, updated: Date.now(), source: null, edited: true, ...fields });
-    store(INDEX_KEY, JSON.stringify(list));
+    let entry;
+    try { entry = JSON.parse(localStorage.getItem(entryKey(id))); } catch {}
+    store(entryKey(id), JSON.stringify({ id, name: "", nodes: 0, updated: Date.now(), source: null, edited: true, ...entry, ...fields }));
   }
   function readNet(id) {
     try {
@@ -132,6 +277,17 @@
   }
   const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   const byRecent = (list) => [...list].sort((a, b) => b.updated - a.updated);
+
+  // Called under the startup lock, including when a viewer becomes an editor.
+  function migrateIndex() {
+    let oldIndex;
+    try { oldIndex = JSON.parse(localStorage.getItem(INDEX_KEY)); } catch {}
+    if (!Array.isArray(oldIndex)) return;
+    for (const entry of oldIndex) {
+      if (!localStorage.getItem(entryKey(entry.id)) && !store(entryKey(entry.id), JSON.stringify(entry))) throw new Error("Couldn't migrate network list");
+    }
+    localStorage.removeItem(INDEX_KEY);
+  }
 
   // Picks the network this tab starts with, creating the first one on a first visit.
   function startNetwork() {
@@ -158,14 +314,17 @@
 
   // Makes network `id` the one being edited, keeping the undo history of the one it replaces.
   function enterNetwork(id) {
-    if (netId && netId !== id) histories.set(netId, { undo: undoStack, redo: redoStack });
-    ({ undo: undoStack, redo: redoStack } = histories.get(id) || { undo: [], redo: [] });
+    if (!viewer) leaveOwnership();
+    if (netId && netId !== id) histories.set(netId, { undo: undoStack, redo: redoStack, snapshot: JSON.stringify(net) });
+    const history = histories.get(id);
+    ({ undo: undoStack, redo: redoStack } = history?.snapshot === JSON.stringify(readNet(id)) ? history : { undo: [], redo: [] });
     histories.delete(id);
     netId = id;
     net = readNet(id) || M.createNetwork(untitledName());
     try { evidence = new Map(JSON.parse(localStorage.getItem(evidenceKey(id))) || []); } catch { evidence = new Map(); }
     sessionStorage.setItem(CURRENT_KEY, id);
     store(LAST_KEY, id);
+    takeOwnership();
   }
 
   // Switches the editor to another saved network. A blank network being left (no variables and
@@ -178,7 +337,7 @@
     hideSoftEditor();
     importBefore = null;
     enterNetwork(id);
-    if (blank && left) removeNetwork(left);
+    if (blank && left) removeNetwork(left, true);
     inferenceCache = null;
     selNodes = new Set();
     selArc = null;
@@ -194,11 +353,16 @@
     fit();
   }
 
-  function removeNetwork(id) {
-    localStorage.removeItem(netKey(id));
-    localStorage.removeItem(evidenceKey(id));
-    histories.delete(id);
-    store(INDEX_KEY, JSON.stringify(readIndex().filter((e) => e.id !== id)));
+  async function removeNetwork(id, onlyBlank = false) {
+    const remove = () => {
+      if (onlyBlank && (readNet(id)?.nodes.length || JSON.parse(localStorage.getItem(entryKey(id)))?.edited)) return;
+      localStorage.removeItem(netKey(id));
+      localStorage.removeItem(evidenceKey(id));
+      localStorage.removeItem(entryKey(id));
+      histories.delete(id);
+    };
+    if (ownedId === id) remove();
+    else await navigator.locks.request("bn-editor:network:" + id, remove);
   }
 
   function untitledName() {
@@ -210,9 +374,15 @@
   // current network when that one is blank, or of an unedited copy opened from the same
   // `source` (a link or demo), so reopening a link doesn't pile up copies.
   function openNetwork(n, source = null) {
+    if (releaseLock) {
+      document.activeElement?.blur();
+      commitInline();
+      cpt.finishEditing();
+    }
     discardLinkedNetwork();
     const blank = netId && !net.nodes.length && !undoStack.length && !redoStack.length;
     const reuse = (source && readIndex().find((e) => e.source === source && !e.edited)) || (blank ? { id: netId } : null);
+    if (reuse && reuse.id !== netId) { switchNetwork(reuse.id); return; }
     const id = reuse ? reuse.id : newId();
     store(netKey(id), JSON.stringify(n));
     localStorage.removeItem(evidenceKey(id));
@@ -232,11 +402,12 @@
     refreshNetwork();
   }
 
-  function deleteNetwork(id) {
+  async function deleteNetwork(id) {
     const entry = readIndex().find((e) => e.id === id);
     if (!entry || !confirm(`Delete “${entry.name || "Untitled"}”? This can't be undone.`)) return;
-    removeNetwork(id);
+    await removeNetwork(id);
     if (id !== netId) return;
+    leaveOwnership();
     netId = null;
     undoStack = [];
     redoStack = [];
@@ -281,6 +452,7 @@
 
   function save() {
     if (viewer) return;
+    if (!canEdit()) return;
     if (unsaved) { updateNetworkButton(); return; }
     store(netKey(netId), JSON.stringify(net));
     updateEntry(netId, { name: net.name, nodes: net.nodes.length, updated: Date.now() });
@@ -301,6 +473,7 @@
   // Runs fn, which mutates `net`, as one undo step. Nothing is recorded when fn leaves the network
   // as it was (for example a refused arc reversal), so Undo and Redo keep what they had.
   function change(fn) {
+    if (!canEdit()) return;
     const before = JSON.stringify(net), labels = labelsById();
     const result = fn();
     // Logic-gate CPTs follow the change: new or removed parents, renamed or reordered states.
@@ -624,6 +797,7 @@
 
   function saveEvidence() {
     if (viewer) { viewerEvidenceChanged = true; return; }
+    if (!canEdit()) return;
     if (unsaved) {
       if (unsaved.importing) return;
       saveLinkedNetwork(); // stores the evidence too
@@ -1808,9 +1982,11 @@
 
   // Returns true when a network was loaded.
   async function importFile(file) {
+    const id = netId;
     let text = await BNImage.codeFromFile(file);
     if (text === null) { toast("This image doesn't contain a network exported from this editor"); return false; }
     if (text === undefined) text = await file.text();
+    if (!await editingReady(id)) return false;
     $("#import-code").value = text;
     if (!$("#import-dialog").open) openImport();
     else showImportResult(null);
@@ -2086,12 +2262,13 @@
   // It's kept in memory only, with the link left in the address bar so reloading opens it
   // again, until it's changed: then saveLinkedNetwork stores it like any other network.
   async function importLink(file, source) {
+    if (!viewer) leaveOwnership();
     const before = netId;
     const beforeBlank = !viewer && netId && !unsaved && !net.nodes.length && !undoStack.length && !redoStack.length;
     hideSoftEditor();
     importBefore = null;
     if (unsaved) discardLinkedNetwork();
-    else if (netId) histories.set(netId, { undo: undoStack, redo: redoStack });
+    else if (netId) histories.set(netId, { undo: undoStack, redo: redoStack, snapshot: JSON.stringify(net) });
     netId = newId();
     unsaved = { source, importing: true };
     undoStack = [];
@@ -2123,7 +2300,7 @@
       else openNetwork(M.createNetwork(untitledName()));
       return;
     }
-    if (beforeBlank) removeNetwork(before);
+    if (beforeBlank) removeNetwork(before, true);
     undoStack = [];
     redoStack = [];
     importBefore = null;
@@ -2257,10 +2434,10 @@
     }
     networksMenu.innerHTML = `<button role="menuitem" data-action="new"><b>New network</b><span>Start an empty one; the others stay saved</span></button><div class="menu-sep"></div>` + rows.join("");
   }
-  networksMenu.addEventListener("click", (e) => {
+  networksMenu.addEventListener("click", async (e) => {
     const del = e.target.closest("[data-delete-net]");
     if (del) {
-      deleteNetwork(del.dataset.deleteNet);
+      await deleteNetwork(del.dataset.deleteNet);
       if (readIndex().length) { renderNetworksMenu(); networksMenu.querySelector("button").focus(); }
       return;
     }
@@ -2309,43 +2486,65 @@
     onLiveEdit: () => { inferenceCache = null; render(); },
   });
 
-  startNetwork();
-  updateNetworkButton();
-  document.querySelector('[data-action="probs"]').setAttribute("aria-pressed", showProbs);
-  render();
-  renderPanel();
-  cpt.render(cptNodeId());
-  updateButtons();
-  requestAnimationFrame(fit);
-  finishGistSignIn();
-  Promise.all([loadFromLink(), loadFromHash()]).then((loaded) => {
-    document.body.classList.remove("viewer-loading");
-    if (viewer) fit();
-    // A frame's load event can precede the asynchronous import. Only replace an image after
-    // a successful import and a rendered, fitted viewer; failures leave the fallback intact.
-    if (viewer && embedded && loaded.some(Boolean) && net.nodes.length) {
-      let fade;
-      if (new URLSearchParams(location.search).has("image-first") && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-        fade = document.documentElement.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 50, easing: "ease-out" });
-        fade.pause();
+  async function start() {
+    if (!viewer) {
+      ownershipUI("Opening your networks…");
+      if (!navigator.locks) {
+        ownershipUI("Safe multi-tab editing requires a browser with Web Locks. Open this page over HTTPS or localhost.");
+        return;
       }
-      // Hidden cross-origin frames may not receive animation frames until they are visible.
-      window.parent.postMessage("bn-viewer-ready", "*");
-      // Announce readiness first, then begin the crossfade when the revealed frame can paint.
-      if (fade) requestAnimationFrame(() => fade.play());
-    }
-  }).catch(() => {
-    document.body.classList.remove("viewer-loading");
-    toast("Couldn't open the linked network");
-  });
+      // Serialize first-visit creation and migration, even when several tabs open at once.
+      await navigator.locks.request("bn-editor:startup", () => {
+        migrateIndex();
+        startNetwork();
+      });
+    } else startNetwork();
+    started = true;
+    if (!viewer) takeOwnership();
+    updateNetworkButton();
+    document.querySelector('[data-action="probs"]').setAttribute("aria-pressed", showProbs);
+    render();
+    renderPanel();
+    cpt.render(cptNodeId());
+    updateButtons();
+    requestAnimationFrame(fit);
+    finishGistSignIn();
+    await editingReady();
+    Promise.all([loadFromLink(), loadFromHash()]).then((loaded) => {
+      document.body.classList.remove("viewer-loading");
+      if (viewer) fit();
+      // A frame's load event can precede the asynchronous import. Only replace an image after
+      // a successful import and a rendered, fitted viewer; failures leave the fallback intact.
+      if (viewer && embedded && loaded.some(Boolean) && net.nodes.length) {
+        let fade;
+        if (new URLSearchParams(location.search).has("image-first") && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          fade = document.documentElement.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 50, easing: "ease-out" });
+          fade.pause();
+        }
+        // Hidden cross-origin frames may not receive animation frames until they are visible.
+        window.parent.postMessage("bn-viewer-ready", "*");
+        // Announce readiness first, then begin the crossfade when the revealed frame can paint.
+        if (fade) requestAnimationFrame(() => fade.play());
+      }
+    }).catch(() => {
+      document.body.classList.remove("viewer-loading");
+      toast("Couldn't open the linked network");
+    });
+  }
+  start().catch(() => ownershipUI("Couldn't open your saved networks. Check browser storage permissions and reload."));
 
   // Leaves the viewer for the full editor, keeping the evidence the reader set. From here the
   // network follows the editor's usual rules (a linked one is saved once it's changed).
   async function openEditor() {
     // Embedded in another page, the editor opens in a new tab, with the reader's evidence.
     if (embedded) { window.open(await netLink(false), "_blank", "noopener"); return; }
+    if (!storageWorks || !navigator.locks) return;
+    try { await navigator.locks.request("bn-editor:startup", migrateIndex); }
+    catch { toast("Couldn't open your saved networks. Check browser storage permissions and try again."); return; }
     viewer = false;
     if (!unsaved) unsaved = { source: null, importing: false };
+    ownershipUI("Opening the editor…");
+    if (!await editingReady()) return;
     // The editor uses your saved settings, except any the reader just changed in the viewer.
     // Probabilities stay shown: the reader was looking at them.
     const saved = (key) => (viewerChoices.has(key) ? null : preference(key));

@@ -120,6 +120,7 @@ try {
     await editorPage.locator('[data-click-mode="intervene"]').click();
     await editorPage.locator('[data-click-mode="observe"]').click(); // the reader's own choice
     await editorPage.locator('[data-action="open-editor"]').click();
+    await editorPage.waitForFunction(() => !document.body.classList.contains("viewer")); // ownership is acquired asynchronously
     assert.equal(await editorPage.locator("[data-soft-mode]").isChecked(), true);
     assert.match(await editorPage.locator('[data-click-mode="observe"]').getAttribute("class"), /\bon\b/);
     console.log("PASS open editor: saved settings restored, reader's choices kept");
