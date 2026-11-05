@@ -1,0 +1,18 @@
+# Playwright for tools/check-*.mjs (installed with npm install --no-save)
+node_modules/
+test-results/
+playwright-report/
+
+# Python (tools/*.py, and pyAgrum checks)
+__pycache__/
+*.pyc
+.venv/
+
+# Amp's local working files (screenshots, transfers, portals)
+.amp/
+
+# Editors and operating systems
+.DS_Store
+.vscode/
+.idea/
+*.swp
