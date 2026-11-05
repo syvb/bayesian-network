@@ -26,6 +26,9 @@ const ready = async page => {
   const cdp = sessions.get(page);
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false });
   await page.bringToFront();
+  // A real tab switch fires focus. Playwright skips it when it already (wrongly) reports focus,
+  // for example after sending mouse input to a background tab.
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await page.waitForFunction(() => document.hasFocus() && !!globalThis.bnEditor?.net && !document.querySelector("main").inert);
   // Panel changes can refit the canvas in ResizeObserver; wait for layout before measuring drags.
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -161,6 +164,7 @@ try {
   await ready(b);
   assert.notEqual((await network(b)).nodes[1].x, beforeMove.x);
   await a.mouse.up();
+  await ready(b); // Playwright focused A for its mouse input; switch back as a user would
   console.log("PASS drags: probability divider and node movement saved on handover without pointerup");
 
   await b.locator('[data-action="networks"]').click();
@@ -222,14 +226,17 @@ try {
   await holder.goto(base + "?view");
   await ready(holder);
   await holder.evaluate(async id => {
+    // Ask the tab that has the network for it, the way an editor tab does, then never let go.
+    new BroadcastChannel("bn-editor-tabs").postMessage({ want: id, at: Date.now() });
     await new Promise(resolve => navigator.locks.request("bn-editor:network:" + id, async () => {
       resolve();
       await new Promise(release => { window.releaseTestLock = release; });
     }));
   }, firstId);
   await a.bringToFront();
-  await a.waitForFunction(() => document.querySelector("main").inert);
-  assert.match(await a.locator("#tab-status").innerText(), /Finishing changes in another tab/);
+  await a.evaluate(() => window.dispatchEvent(new Event("focus")));
+  // coming back to A takes the network back; the holder never lets go, so A waits
+  await a.waitForFunction(() => document.querySelector("main").inert && /Waiting for another tab/.test(document.querySelector("#tab-status").textContent));
   if (process.env.CAPTURE_DIR) await a.screenshot({ path: `${process.env.CAPTURE_DIR}/tabs-waiting.png` });
   await b.bringToFront(); // cancel A's queued acquisition; it must not steal ownership later
   await a.bringToFront();
@@ -523,6 +530,29 @@ try {
   await noLocks.waitForFunction(() => document.querySelectorAll(".node").length > 0);
   assert.equal(await noLocks.locator("main").evaluate(el => el.inert), false);
   console.log("PASS unsupported Web Locks: editor safely blocked with explanation; viewer still usable");
+
+  {
+    // Safari can open a link in a new window that reports no focus and never fires a focus
+    // event. With only one tab there is nothing to hand over: the link must open and be
+    // editable at once, without the startup demo appearing first.
+    const fresh = await browser.newContext();
+    const page = await fresh.newPage();
+    await page.addInitScript(() => {
+      Document.prototype.hasFocus = () => false;
+      window.addEventListener("focus", e => e.stopImmediatePropagation(), true);
+      window.shown = new Set();
+      setInterval(() => { const n = globalThis.bnEditor?.net; if (n?.nodes.length && getComputedStyle(document.querySelector("#canvas-wrap")).visibility !== "hidden") window.shown.add(n.name); }, 5);
+    });
+    const code = P.exportPython(demoFixtures.find(d => d.id === "wet-grass").build());
+    await page.route("**/unfocused.py", route => route.fulfill({ contentType: "text/plain", body: code }));
+    await page.goto(base + "?src=" + encodeURIComponent(base + "/unfocused.py"));
+    await page.waitForFunction(() => bnEditor.net.nodes.length === 4 && !document.querySelector("main").inert, null, { timeout: 5000 });
+    await rename(page, "Edited in an unfocused window");
+    assert.equal((await network(page)).name, "Edited in an unfocused window");
+    assert.deepEqual(await page.evaluate(() => [...window.shown].filter(n => n !== "Edited in an unfocused window")), [P.importPython(code).net.name]);
+    await fresh.close();
+    console.log("PASS unfocused window: a link opens and is editable without focus, and no other network flashes first");
+  }
   await unsupported.close();
 } finally {
   await browser?.close();

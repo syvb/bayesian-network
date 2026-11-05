@@ -86,8 +86,8 @@
   if (viewer) {
     showProbs = true;
     document.body.classList.add("viewer");
-    if (/[?&]src=/.test(location.search) || location.hash.startsWith("#net=")) document.body.classList.add("viewer-loading");
   }
+  if (/[?&]src=/.test(location.search) || location.hash.startsWith("#net=")) document.body.classList.add("viewer-loading");
 
   // ------------------------------------------------------------ state & history
 
@@ -100,19 +100,24 @@
   let started = false, ownedId = null, releaseLock = null, pendingLock = null;
   let leaving = null, switching = false;
   let focusOnReturn = null;
+  // A tab keeps its network, focused or not, until another tab asks for it: ownership only
+  // changes hands when two tabs have the same network open. `parked` means this tab gave its
+  // network to another tab, and takes it back only when you come back to this tab.
+  let parked = false;
+  const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("bn-editor-tabs") : null;
+  const linkOnStart = !viewer && (/[?&]src=/.test(location.search) || location.hash.startsWith("#net="));
   const tabStatus = document.createElement("div");
   tabStatus.id = "tab-status";
   tabStatus.setAttribute("role", "status");
   tabStatus.hidden = true;
   document.body.append(tabStatus);
   const canEdit = () => viewer || (!leaving && ownedId !== null && ownedId === netId);
-  const activeTab = () => document.hasFocus() && !document.hidden;
 
   function ownershipUI(message = saveFailed ? "Changes aren't saved. Keep this tab open; free browser storage, then return here to retry." : "") {
     tabStatus.textContent = message;
     tabStatus.hidden = !message;
     for (const el of document.body.children) {
-      if (el !== tabStatus && el.tagName !== "SCRIPT") el.inert = !viewer && (switching || !canEdit() || !activeTab());
+      if (el !== tabStatus && el.tagName !== "SCRIPT") el.inert = !viewer && (switching || !canEdit());
     }
   }
 
@@ -124,7 +129,8 @@
     if (leaving) return leaving;
     if (releaseLock) {
       const focused = document.activeElement;
-      const selection = [focused.selectionStart, focused.selectionEnd, focused.selectionDirection];
+      // A background tab can report the caret at 0, so use where it was when the tab lost focus.
+      const selection = caretOnBlur && (caretOnBlur.element === focused || (focused.id && caretOnBlur.element?.id === focused.id)) ? caretOnBlur.selection : [focused.selectionStart, focused.selectionEnd, focused.selectionDirection];
       const key = panel.contains(focused) && focusKeys.find(k => focused.hasAttribute(k));
       document.activeElement?.blur();
       commitInline();
@@ -153,13 +159,37 @@
         return true;
       })().finally(() => {
         leaving = null;
-        ownershipUI(saveFailed ? undefined : "Editing is paused. Focus this tab to continue.");
+        ownershipUI(saveFailed ? undefined : pausedMessage());
       });
       ownershipUI("Saving changes before switching…");
       return leaving;
     }
-    ownershipUI("Editing is paused. Focus this tab to continue.");
+    ownershipUI(pausedMessage());
     return Promise.resolve(true);
+  }
+
+  const pausedMessage = () => (parked ? "This network is open in another tab, which is editing it. Click here to edit it here instead." : "");
+
+  // Another tab wants a network: give it up if it's ours (after saving), and don't take it back
+  // until this tab is used again.
+  // A tab gives way (whether it has the network or is waiting for it) only to a tab used more
+  // recently, so the tab you used last ends up with it, and a stale request can't steal it.
+  let claimedAt = 0;
+  const want = (id) => channel?.postMessage({ want: id, at: claimedAt });
+  channel?.addEventListener("message", (e) => {
+    if (!started || viewer || e.data?.want == null || e.data.want !== netId) return;
+    if ((ownedId !== netId && !pendingLock) || !(e.data.at > claimedAt)) return;
+    parked = true;
+    leaveOwnership();
+  });
+
+  // You came back to this tab (focus, switching to it, or a click or key in it): take its
+  // network back from whichever tab has it.
+  function claim() {
+    if (viewer || !started) return;
+    claimedAt = Date.now();
+    if (parked) { parked = false; window.dispatchEvent(new Event("bn-claim")); }
+    takeOwnership();
   }
 
   function resumeOwnership() {
@@ -175,15 +205,18 @@
 
   function takeOwnership() {
     if (viewer) return Promise.resolve(true);
-    if (!started || !netId || !activeTab()) return Promise.resolve(false);
-    if (leaving) return leaving.then(() => !switching && activeTab() ? takeOwnership() : false);
+    if (!started || !netId || parked) return Promise.resolve(false);
+    if (leaving) return leaving.then(() => !switching && !parked ? takeOwnership() : false);
     if (ownedId === netId) {
       return flushSaves().then(() => {
-        if (activeTab() && !switching) resumeOwnership();
+        if (!switching) resumeOwnership();
         return true;
       });
     }
-    if (pendingLock) return pendingLock.ready;
+    if (pendingLock) {
+      want(netId);
+      return pendingLock.ready;
+    }
     if (!navigator.locks) {
       ownershipUI("Safe multi-tab editing requires a browser with Web Locks. Open this page over HTTPS or localhost.");
       return Promise.resolve(false);
@@ -192,14 +225,13 @@
     let acquired;
     controller.ready = new Promise(resolve => { acquired = resolve; });
     pendingLock = controller;
-    ownershipUI("Finishing changes in another tab… Return there if this persists; closing it could lose unsaved changes.");
     navigator.locks.request("bn-editor:network:" + id, { signal: controller.signal }, async () => {
-      if (controller.signal.aborted || id !== netId || !activeTab()) return;
+      if (controller.signal.aborted || id !== netId) return;
       // A fresh transaction, after acquiring the lock, is the handover's source of truth.
       // Dirty memory belongs to a newly created network that has not been saved yet.
       if (!unsaved && savedVersion === saveVersion) {
         const latestRecord = await storage.get(id);
-        if (controller.signal.aborted || id !== netId || !activeTab()) return;
+        if (controller.signal.aborted || id !== netId) return;
         const latest = latestRecord?.net;
         if (!latest) {
           pendingLock = null;
@@ -236,12 +268,14 @@
           toast(changed ? "Updated from another tab. Undo history was cleared." : "Evidence updated from another tab.");
         }
       }
-      if (controller.signal.aborted || id !== netId || !activeTab()) return;
+      if (controller.signal.aborted || id !== netId) return;
       pendingLock = null;
       ownedId = id;
       const held = new Promise(resolve => { releaseLock = resolve; });
       await flushSaves();
-      if (activeTab() && !leaving && !switching) resumeOwnership();
+      if (!leaving && !switching) {
+        resumeOwnership();
+      }
       acquired(true);
       await held;
     }).catch(error => {
@@ -253,6 +287,14 @@
       if (pendingLock === controller) pendingLock = null;
       acquired(false);
     });
+    // Usually the lock is free and this resolves at once. Otherwise another tab has this
+    // network: ask it to hand over (it parks until you use it again).
+    setTimeout(() => {
+      if (pendingLock !== controller) return;
+      ownershipUI(parked ? pausedMessage() : "Waiting for another tab to save this network…");
+      // only a tab in use asks (a background tab's timer can fire long after it was used)
+      if (document.hasFocus() && !document.hidden) want(id);
+    }, 50);
     return controller.ready;
   }
 
@@ -260,16 +302,22 @@
     if (viewer) return true;
     while (id === netId) {
       if (!navigator.locks) return false;
-      if (!activeTab()) await new Promise(resolve => window.addEventListener("focus", resolve, { once: true }));
+      if (parked) await new Promise(resolve => window.addEventListener("bn-claim", resolve, { once: true }));
       if (id !== netId) return false;
-      if (await takeOwnership() && id === netId && canEdit() && activeTab()) return true;
-      if (activeTab()) return false;
+      if (await takeOwnership() && id === netId && canEdit()) return true;
+      if (!parked) return false;
     }
     return false;
   }
 
-  window.addEventListener("blur", () => { if (started && !viewer) leaveOwnership(); });
-  const focusOwnership = () => { if (!switching) takeOwnership(); };
+  // Losing focus keeps the network: it's handed over only when another tab asks for it.
+  let caretOnBlur = null;
+  window.addEventListener("blur", () => {
+    const el = document.activeElement;
+    caretOnBlur = { element: el, selection: [el?.selectionStart, el?.selectionEnd, el?.selectionDirection] };
+    if (started && !viewer && releaseLock) flushSaves();
+  });
+  const focusOwnership = () => { if (!switching) claim(); };
   window.addEventListener("focus", focusOwnership);
   window.addEventListener("pagehide", () => { if (started && !viewer) leaveOwnership(); });
   window.addEventListener("pageshow", focusOwnership);
@@ -289,13 +337,18 @@
   });
   document.addEventListener("visibilitychange", () => {
     if (!started || viewer) return;
-    if (document.hidden) leaveOwnership();
+    if (document.hidden) { if (releaseLock) flushSaves(); }
     else focusOwnership();
   });
   // inert blocks controls; the capture guard also blocks document-level keyboard shortcuts.
   for (const type of ["keydown", "pointerdown", "click", "dblclick", "drop", "paste"]) {
     document.addEventListener(type, e => {
-      if (!viewer && (switching || !canEdit())) { e.preventDefault(); e.stopImmediatePropagation(); }
+      if (!viewer && (switching || !canEdit())) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        // Using a tab whose network another tab has takes it back.
+        if (parked && (type === "pointerdown" || type === "keydown")) claim();
+      }
     }, true);
   }
 
@@ -362,6 +415,9 @@
     await reloadNetworks();
   }
 
+  // This tab's network from before a reload, else the one last used in any tab, else the newest.
+  const rememberedNetwork = () => [sessionStorage.getItem(CURRENT_KEY), localStorage.getItem(LAST_KEY), ...byRecent(readIndex()).map((e) => e.id)].find(id => id && records.has(id));
+
   // Picks the network this tab starts with, creating the first one on a first visit.
   async function startNetwork() {
     if (viewer) {
@@ -369,13 +425,15 @@
       net = BNDemos[0].build();
       return;
     }
+    // A link opens as a network of its own, so don't load (or on a first visit create) another
+    // one first: it would only flash up before the link's network replaces it.
+    if (linkOnStart) return;
     if (!readIndex().length) {
       const first = makeRecord(newId(), BNDemos[0].build(), "demo:" + BNDemos[0].id);
       await storage.put(first);
       records.set(first.id, first);
     }
-    const ids = [sessionStorage.getItem(CURRENT_KEY), localStorage.getItem(LAST_KEY), ...byRecent(readIndex()).map((e) => e.id)];
-    await enterNetwork(ids.find(id => records.has(id)));
+    await enterNetwork(rememberedNetwork());
   }
 
   // Makes network `id` the one being edited, keeping the undo history of the one it replaces.
@@ -421,8 +479,8 @@
       return false;
     } finally {
       switching = false;
-      if (activeTab()) await takeOwnership();
-      else ownershipUI("Editing is paused. Focus this tab to continue.");
+      if (!parked) await takeOwnership();
+      else ownershipUI(pausedMessage());
     }
   }
 
@@ -2414,7 +2472,11 @@
       }
       await leaveOwnership();
       discardLinkedNetwork();
-      if (before && await storage.get(before)) await enterNetwork(before);
+      // A link opened at startup had no network before it: fall back to the one this tab would
+      // have started with.
+      await reloadNetworks();
+      const back = before && records.has(before) ? before : rememberedNetwork();
+      if (back) await enterNetwork(back);
       else await nextNetwork();
       return;
     }
@@ -2527,7 +2589,7 @@
     if (open) {
       try { await reloadNetworks(); }
       catch { toast("Couldn't read your saved networks. Check browser storage and try again."); return; }
-      if (!canEdit() || switching || !activeTab()) return;
+      if (!canEdit() || switching) return;
       renderNetworksMenu();
     }
     toggleNetworksMenuRaw(open);
@@ -2624,6 +2686,7 @@
       });
     } else await startNetwork();
     started = true;
+    claimedAt = Date.now();
     if (!viewer) takeOwnership();
     updateNetworkButton();
     document.querySelector('[data-action="probs"]').setAttribute("aria-pressed", showProbs);
@@ -2635,7 +2698,14 @@
     finishGistSignIn();
     // Linked imports acquire their own network's lock. Don't wait for the unrelated
     // startup network, whose owner may be keeping unsaved changes in memory.
+    // A startup link that couldn't be opened (unreachable, damaged) leaves no network: open the
+    // one this tab would have started with.
+    const fallBack = () => {
+      if (viewer || netId) return;
+      navigate(async () => { await reloadNetworks(); const id = rememberedNetwork(); return id ? enterNetwork(id) : nextNetwork(); });
+    };
     Promise.all([loadFromLink(), loadFromHash()]).then((loaded) => {
+      fallBack();
       document.body.classList.remove("viewer-loading");
       if (viewer) fit();
       // A frame's load event can precede the asynchronous import. Only replace an image after
@@ -2652,6 +2722,7 @@
         if (fade) requestAnimationFrame(() => fade.play());
       }
     }).catch(() => {
+      fallBack();
       document.body.classList.remove("viewer-loading");
       toast("Couldn't open the linked network");
     });
