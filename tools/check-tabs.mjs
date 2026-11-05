@@ -338,6 +338,9 @@ try {
   const damaged = await quota.newPage();
   await damaged.addInitScript(id => sessionStorage.setItem("bn-editor-current", id), unsavedId);
   await damaged.goto(base + "#net=damaged");
+  // a background tab, like a real one (Playwright reports every tab as focused, even after navigation)
+  sessions.set(damaged, await quota.newCDPSession(damaged));
+  await sessions.get(damaged).send("Emulation.setFocusEmulationEnabled", { enabled: false });
   await damaged.waitForFunction(() => document.body.textContent.includes("This link's network is damaged"));
   assert.equal(await damaged.locator("main").evaluate(el => el.inert), true);
   await writer.evaluate(() => { IDBObjectStore.prototype.put = window.restoreStorage; });
@@ -373,6 +376,40 @@ try {
   await demoPage.waitForFunction(id => sessionStorage.getItem("bn-editor-current") === id && !document.querySelector("main").inert, randomId);
   assert.notDeepEqual(await network(demoPage), firstRandom);
   console.log("PASS demos: reopening an unedited Random network rebuilds it without accumulating copies");
+
+  // A tab reopening a demo whose lock is busy gives way to a newer tab; using it again must
+  // take the network back, even though it's still in the middle of opening it.
+  await demoPage.locator('[data-action="demo"]').click();
+  await demoPage.locator('[data-demo="houseplant"]').click();
+  await ready(demoPage);
+  const demoHolder = await demos.newPage();
+  await demoHolder.goto(base + "?view");
+  await demoHolder.evaluate(async id => {
+    await new Promise(resolve => navigator.locks.request("bn-editor:network:" + id, async () => {
+      resolve();
+      await new Promise(release => { window.releaseDemo = release; });
+    }));
+  }, randomId);
+  await ready(demoPage);
+  await demoPage.locator('[data-action="demo"]').click();
+  await demoPage.locator('[data-demo="random"]').click();
+  await demoPage.waitForFunction(id => sessionStorage.getItem("bn-editor-current") === id && document.querySelector("main").inert, randomId);
+  const demoNewer = await demos.newPage();
+  await demoNewer.addInitScript(id => sessionStorage.setItem("bn-editor-current", id), randomId);
+  await demoNewer.goto(base);
+  await demoNewer.bringToFront();
+  await demoNewer.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await demoPage.waitForFunction(() => /Click here to edit/.test(document.querySelector("#tab-status").textContent));
+  await demoHolder.evaluate(() => window.releaseDemo());
+  await ready(demoNewer);
+  await demoPage.bringToFront();
+  await demoPage.mouse.click(600, 400); // returning to the tab (its focus event, or the click)
+  await demoPage.waitForFunction(() => !document.querySelector("main").inert, null, { timeout: 5000 });
+  assert.equal(await demoPage.evaluate(() => sessionStorage.getItem("bn-editor-current")), randomId);
+  assert.equal((await network(demoPage)).name, "Random");
+  await demoHolder.close();
+  await demoNewer.close();
+  console.log("PASS demo handover mid-open: a tab that gave way while opening takes the network back when used");
 
   await demoPage.locator('[data-action="demo"]').click();
   await demoPage.locator('[data-demo="houseplant"]').click();

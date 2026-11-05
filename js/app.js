@@ -100,6 +100,9 @@
 
   let started = false, ownedId = null, releaseLock = null, pendingLock = null;
   let leaving = null, switching = false;
+  // The network a navigation has arrived at and is waiting to edit. While leaving the old
+  // network, using the tab mustn't claim it back; once waiting for the new one, it must.
+  let waitingFor = null;
   let focusOnReturn = null;
   // A tab keeps its network, focused or not, until another tab asks for it: ownership only
   // changes hands when two tabs have the same network open. `parked` means this tab gave its
@@ -315,14 +318,19 @@
 
   async function editingReady(id = netId) {
     if (viewer) return true;
-    while (id === netId) {
-      if (!tabsSupported()) return false;
-      if (parked) await new Promise(resolve => window.addEventListener("bn-claim", resolve, { once: true }));
-      if (id !== netId) return false;
-      if (await takeOwnership() && id === netId && canEdit()) return true;
-      if (!parked) return false;
+    waitingFor = id;
+    try {
+      while (id === netId) {
+        if (!tabsSupported()) return false;
+        if (parked) await new Promise(resolve => window.addEventListener("bn-claim", resolve, { once: true }));
+        if (id !== netId) return false;
+        if (await takeOwnership() && id === netId && canEdit()) return true;
+        if (!parked) return false;
+      }
+      return false;
+    } finally {
+      if (waitingFor === id) waitingFor = null;
     }
-    return false;
   }
 
   // Losing focus keeps the network: it's handed over only when another tab asks for it.
@@ -332,7 +340,8 @@
     caretOnBlur = { element: el, selection: [el?.selectionStart, el?.selectionEnd, el?.selectionDirection] };
     if (started && !viewer && releaseLock) flushSaves();
   });
-  const focusOwnership = () => { if (!switching) claim(); };
+  const mayClaim = () => !switching || (waitingFor !== null && waitingFor === netId);
+  const focusOwnership = () => { if (mayClaim()) claim(); };
   window.addEventListener("focus", focusOwnership);
   window.addEventListener("pagehide", () => { if (started && !viewer) leaveOwnership(); });
   window.addEventListener("pageshow", focusOwnership);
@@ -362,7 +371,7 @@
         e.preventDefault();
         e.stopImmediatePropagation();
         // Using a tab whose network another tab has (or is still saving) asks for it.
-        if ((parked || pendingLock) && !switching && (type === "pointerdown" || type === "keydown")) claim();
+        if ((parked || pendingLock) && mayClaim() && (type === "pointerdown" || type === "keydown")) claim();
       }
     }, true);
   }
