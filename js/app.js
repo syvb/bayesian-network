@@ -907,6 +907,7 @@
   // ------------------------------------------------------------ rendering
 
   function render() {
+    if (viewer) prepareLinks();
     const parts = [];
     const widths = new Map(net.nodes.map((n) => [n.id, nodeSize(n)]));
     const inf = showProbs ? inference() : null;
@@ -2245,9 +2246,28 @@
   const pipe = async (bytes, stream) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
 
   // A link with the current network (and evidence) in its hash; ?view opens it in the viewer.
-  async function netLink(asViewer) {
-    const packed = await pipe(new TextEncoder().encode(exportCode()), new CompressionStream("deflate-raw"));
+  async function netLink(asViewer, code = exportCode()) {
+    const packed = await pipe(new TextEncoder().encode(code), new CompressionStream("deflate-raw"));
     return location.href.replace(/[?#].*$/, "") + (asViewer ? "?view" + (forcedTheme ? "&theme=" + forcedTheme : "") : "") + "#net=" + toBase64Url(packed);
+  }
+
+  // Opens the network in a new tab. Popup blockers (Safari, in a sandboxed embed) allow
+  // window.open only synchronously in the click, but compressing a link is asynchronous, so the
+  // viewer keeps its links ready, refreshed right after each change.
+  let readyLinks = null, linksTimer = 0;
+  function prepareLinks() {
+    clearTimeout(linksTimer);
+    linksTimer = setTimeout(async () => {
+      const code = exportCode(), key = code + "\n" + forcedTheme;
+      if (readyLinks?.key === key) return;
+      const links = { key, viewer: await netLink(true, code), editor: await netLink(false, code) };
+      if (key === exportCode() + "\n" + forcedTheme) readyLinks = links;
+    });
+  }
+  function openLink(asViewer) {
+    const links = readyLinks?.key === exportCode() + "\n" + forcedTheme ? readyLinks : null;
+    if (links) window.open(asViewer ? links.viewer : links.editor, "_blank", "noopener");
+    else netLink(asViewer).then(url => window.open(url, "_blank", "noopener"));
   }
 
   // At about 800px wide, sized to the network's shape, plus title and evidence bars.
@@ -2582,7 +2602,7 @@
     "embed-download-image": () => downloadImage("svg", $("#embed-theme").value),
     "close-embed": () => $("#embed-dialog").close(),
     "gist-copy-embed": () => openEmbed($("#gist-link").value.replace("?src=", "?view&src=")),
-    "open-viewer": async () => window.open(await netLink(true), "_blank", "noopener"),
+    "open-viewer": () => openLink(true),
     "open-editor": openEditor,
     "gist-copy-viewer": async () => { await navigator.clipboard.writeText($("#gist-link").value.replace("?src=", "?view&src=")); toast("Copied the viewer link"); },
     gist: () => { toggleShareMenu(false); openGist(); },
@@ -2784,7 +2804,7 @@
   // network follows the editor's usual rules (a linked one is saved once it's changed).
   async function openEditor() {
     // Embedded in another page, the editor opens in a new tab, with the reader's evidence.
-    if (embedded) { window.open(await netLink(false), "_blank", "noopener"); return; }
+    if (embedded) { openLink(false); return; }
     if (!storageWorks || !tabsSupported()) return;
     try { await navigator.locks.request("bn-editor:startup", migrateIndex); }
     catch { toast("Couldn't open your saved networks. Check browser storage permissions and try again."); return; }

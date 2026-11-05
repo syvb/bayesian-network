@@ -74,9 +74,16 @@ try {
     // Restore hard evidence after exercising both soft-evidence preferences.
     await frame.locator('[data-clear-ev="all"]').click();
     await rain.click();
+    // Safari blocks a popup opened after an await in a sandboxed frame: it must open during the click.
+    await frame.evaluate(() => {
+      const open = window.open;
+      window.open = (...args) => { window.openedDuring = window.event?.type; return open.apply(window, args); };
+    });
+    await frame.waitForTimeout(100);
     const popupPromise = page.waitForEvent("popup");
     await frame.locator('[data-action="open-viewer"]').click();
     const popup = await popupPromise;
+    assert.equal(await frame.evaluate(() => window.openedDuring), "click");
     await popup.waitForFunction(() => document.querySelectorAll(".node").length === 4);
     assert.equal(await popup.evaluate(() => document.body.classList.contains("viewer")), true);
     assert.equal(await popup.locator("#evidence-bar").textContent(), evidence);
