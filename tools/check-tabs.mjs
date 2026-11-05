@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { deflateRawSync } from "node:zlib";
+import { P, demos as demoFixtures } from "./load.mjs";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
 const server = createServer(async (req, res) => {
@@ -25,8 +27,20 @@ const ready = async page => {
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false });
   await page.bringToFront();
   await page.waitForFunction(() => document.hasFocus() && !!globalThis.bnEditor?.net && !document.querySelector("main").inert);
+  // Panel changes can refit the canvas in ResizeObserver; wait for layout before measuring drags.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 };
 const network = page => page.evaluate(() => JSON.parse(JSON.stringify(bnEditor.net)));
+const reload = async page => {
+  // CDP Page.reload can discard the page without waiting for asynchronous autosave.
+  // Test reload of committed data; the browser's real unsaved-reload warning is tested below.
+  await page.waitForFunction(async () => {
+    const record = await (await BNStorage.open()).get(sessionStorage.getItem("bn-editor-current"));
+    return JSON.stringify(record?.net) === JSON.stringify(bnEditor.net);
+  });
+  await page.reload();
+  await ready(page);
+};
 const switchTo = async (page, id) => {
   await ready(page);
   await page.locator('[data-action="networks"]').click();
@@ -51,6 +65,34 @@ try {
   await b.goto(base);
   await ready(b);
 
+  // Returning to a text field must not route typing into destructive canvas shortcuts.
+  await ready(a);
+  await a.locator('.node[data-node="1"] .body').click({ position: { x: 20, y: 12 } });
+  await a.locator("#n-desc").fill("Description xyz");
+  await ready(b);
+  await ready(a);
+  await a.keyboard.press("Backspace");
+  assert.equal((await network(a)).nodes.length, 8);
+  assert.equal(await a.locator("#n-desc").inputValue(), "Description xy");
+  await a.keyboard.type("n");
+  await a.keyboard.press("ArrowLeft");
+  await a.keyboard.press("Enter");
+  assert.equal((await network(a)).nodes.length, 8);
+  assert.equal(await a.locator("#n-desc").inputValue(), "Description xyn");
+  assert.equal(await a.locator("#inline-edit").isHidden(), true);
+  await a.locator("#n-desc").fill("Description xyz");
+  await ready(b);
+  await rename(b, "Changed while editing Description");
+  await ready(a);
+  assert.equal((await network(a)).name, "Changed while editing Description");
+  assert.deepEqual(await a.evaluate(() => ({ id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd })), { id: "n-desc", start: 15, end: 15 });
+  await a.keyboard.press("Backspace");
+  assert.equal((await network(a)).nodes.length, 8);
+  assert.equal(await a.locator("#n-desc").inputValue(), "Description xy");
+  if (process.env.CAPTURE_DIR) await a.screenshot({ path: `${process.env.CAPTURE_DIR}/tabs-focus-external.png` });
+  await a.locator("#canvas").press("Escape");
+  console.log("PASS keyboard focus: Backspace, N, arrows and Enter stay in Description, including after external changes");
+
   // Leave a real, uncommitted field edit: the handover must commit it before B reads storage.
   await ready(a);
   await a.locator("#net-name").fill("Houseplant — edited in A");
@@ -66,8 +108,7 @@ try {
   assert.equal((await network(a)).nodes[0].name, "winter renamed in B");
   assert.equal(await a.locator('[data-action="undo"]').isDisabled(), true);
   await rename(a, "Combined changes");
-  await a.reload();
-  await ready(a);
+  await reload(a);
   assert.equal((await network(a)).nodes[0].name, "winter renamed in B");
   assert.equal((await network(a)).name, "Combined changes");
   console.log("PASS same network: unfinished field commits; unrelated edits survive handover and reload; stale undo cleared");
@@ -130,15 +171,14 @@ try {
   await ready(a);
   await a.locator("#canvas").press("Escape");
   await rename(a, "Separate network A");
-  await a.reload();
-  await ready(a);
+  await reload(a);
   assert.equal((await network(a)).name, "Separate network A");
   await ready(b);
-  await b.reload();
-  await ready(b);
+  await reload(b);
   assert.equal((await network(b)).name, "Separate network B");
   assert.equal(await b.evaluate(() => sessionStorage.getItem("bn-editor-current")), secondId);
   await b.locator('[data-action="networks"]').click();
+  await b.locator("#networks-menu").waitFor({ state: "visible" });
   assert.match(await b.locator("#networks-menu").innerText(), /Separate network A/);
   await b.locator('[data-action="networks"]').click();
   console.log("PASS different networks: both edits and per-tab selections survive reload; menu stays current");
@@ -150,6 +190,32 @@ try {
   await switchTo(a, firstId);
   assert.equal(await a.locator('[data-action="undo"]').isDisabled(), true);
   console.log("PASS network switching: cached stale undo history discarded");
+
+  // Hold a real storage transaction open, rather than delaying a mocked save promise.
+  const busy = await context.newPage();
+  await busy.goto(base + "?view");
+  await ready(busy);
+  await ready(a);
+  await busy.evaluate(async () => {
+    const db = await new Promise(resolve => { indexedDB.open("bn-editor").onsuccess = e => resolve(e.target.result); });
+    await new Promise(resolve => {
+      const tx = db.transaction("networks", "readwrite"), store = tx.objectStore("networks");
+      tx.oncomplete = () => db.close();
+      const keepAlive = () => {
+        store.get("busy-test").onsuccess = () => { resolve(); if (!window.finishStorage) keepAlive(); };
+      };
+      keepAlive();
+    });
+  });
+  await rename(a, "First queued edit");
+  await rename(a, "Latest queued edit");
+  await b.bringToFront();
+  await b.waitForFunction(() => document.hasFocus() && document.querySelector("main").inert);
+  await busy.evaluate(() => { window.finishStorage = true; });
+  await ready(b);
+  assert.equal((await network(b)).name, "Latest queued edit");
+  await busy.close();
+  console.log("PASS busy storage: handover waits for all queued edits, not just the first transaction");
 
   // Real lock contention: an unresponsive owner cannot be bypassed. Closing it releases the lock.
   const holder = await context.newPage();
@@ -179,14 +245,155 @@ try {
   b.once("dialog", dialog => dialog.accept());
   await b.locator('[data-action="networks"]').click();
   await b.locator(`[data-delete-net="${firstId}"]`).click();
-  await b.waitForFunction(id => !localStorage.getItem("bn-editor-net:" + id), firstId);
+  await b.waitForFunction(async id => !(await (await BNStorage.open()).get(id)), firstId);
   await ready(a);
   assert.notEqual(await a.evaluate(() => sessionStorage.getItem("bn-editor-current")), firstId);
-  assert.equal(await a.evaluate(id => localStorage.getItem("bn-editor-net:" + id), firstId), null);
+  assert.equal(await a.evaluate(async id => (await BNStorage.open()).get(id), firstId), undefined);
   console.log("PASS deletion: parked tab moves to another network without resurrecting deleted data");
 
   assert.deepEqual(errors, []);
   await context.close();
+
+  const quota = await browser.newContext();
+  const writer = await quota.newPage();
+  await writer.goto(base);
+  await ready(writer);
+  const reader = await quota.newPage();
+  await reader.goto(base);
+  await ready(reader);
+  const independent = await quota.newPage();
+  await independent.goto(base);
+  await ready(independent);
+  await independent.locator('[data-action="networks"]').click();
+  await independent.locator('[data-action="new"]').click();
+  await ready(independent);
+  const independentId = await independent.evaluate(() => sessionStorage.getItem("bn-editor-current"));
+  await ready(writer);
+  const unsavedId = await writer.evaluate(() => sessionStorage.getItem("bn-editor-current"));
+  await writer.evaluate(() => {
+    window.restoreStorage = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (...args) {
+      const request = window.restoreStorage.apply(this, args);
+      // The request succeeds but the transaction fails: ownership must not be released.
+      if (this.name === "networks") request.addEventListener("success", () => this.transaction.abort());
+      return request;
+    };
+  });
+  await rename(writer, "Unsaved but not lost");
+  await writer.locator('[data-node="1"] [data-state="0"]').click();
+  await reader.bringToFront();
+  await reader.waitForFunction(() => document.hasFocus());
+  await ready(writer);
+  assert.equal((await network(writer)).name, "Unsaved but not lost");
+  assert.match(await writer.locator("#evidence-bar").innerText(), /winter = yes/);
+  assert.equal(await writer.locator('[data-action="undo"]').isDisabled(), false);
+  await switchTo(writer, independentId);
+  assert.equal(await writer.evaluate(() => sessionStorage.getItem("bn-editor-current")), unsavedId);
+  assert.equal((await network(writer)).name, "Unsaved but not lost");
+  assert.match(await writer.locator("#tab-status").innerText(), /Changes aren't saved.*Keep this tab open/);
+  const warning = writer.waitForEvent("dialog");
+  const reloadAttempt = writer.evaluate(() => location.reload());
+  const dialog = await warning;
+  assert.equal(dialog.type(), "beforeunload");
+  await dialog.dismiss();
+  await reloadAttempt;
+  await ready(writer);
+  assert.equal((await network(writer)).name, "Unsaved but not lost");
+  if (process.env.CAPTURE_DIR) await writer.screenshot({ path: `${process.env.CAPTURE_DIR}/tabs-unsaved.png` });
+  await ready(independent);
+  await rename(independent, "Different network still editable");
+  assert.equal((await network(independent)).name, "Different network still editable");
+  await reader.bringToFront();
+  await reader.waitForFunction(() => document.hasFocus() && document.querySelector("main").inert);
+  if (process.env.CAPTURE_DIR) await reader.screenshot({ path: `${process.env.CAPTURE_DIR}/tabs-unsaved-waiting.png` });
+  // Startup links create independent networks, even if the remembered network can't save.
+  const sharedCode = P.exportPython(demoFixtures.find(d => d.id === "wet-grass").build());
+  for (const format of ["hash", "src"]) {
+    const link = await quota.newPage();
+    await link.addInitScript(id => sessionStorage.setItem("bn-editor-current", id), unsavedId);
+    await link.route("**/shared.py", route => route.fulfill({ contentType: "text/plain", body: sharedCode }));
+    const url = format === "hash" ? base + "#net=" + deflateRawSync(sharedCode).toString("base64url")
+      : base + "?src=" + encodeURIComponent(base + "/shared.py");
+    await link.goto(url);
+    await link.waitForFunction(() => globalThis.bnEditor?.net.nodes.length === 4 && !document.querySelector("main").inert, null, { timeout: 5000 });
+    await ready(link);
+    await rename(link, `Independent ${format} link`);
+    await link.waitForFunction(async name => {
+      const id = sessionStorage.getItem("bn-editor-current");
+      return (await (await BNStorage.open()).get(id))?.net.name === name;
+    }, `Independent ${format} link`);
+    assert.notEqual(await link.evaluate(() => sessionStorage.getItem("bn-editor-current")), unsavedId);
+    console.log(`PASS blocked startup ${format} link: imports and saves independently of an unsaved owner's lock`);
+  }
+  const damaged = await quota.newPage();
+  await damaged.addInitScript(id => sessionStorage.setItem("bn-editor-current", id), unsavedId);
+  await damaged.goto(base + "#net=damaged");
+  await damaged.waitForFunction(() => document.body.textContent.includes("This link's network is damaged"));
+  assert.equal(await damaged.locator("main").evaluate(el => el.inert), true);
+  await writer.evaluate(() => { IDBObjectStore.prototype.put = window.restoreStorage; });
+  await ready(writer);
+  await ready(damaged);
+  assert.equal((await network(damaged)).name, "Unsaved but not lost");
+  console.log("PASS damaged startup link: reports failure and resumes the saved network after its owner recovers");
+  await ready(reader);
+  assert.equal((await network(reader)).name, "Unsaved but not lost");
+  assert.match(await reader.locator("#evidence-bar").innerText(), /winter = yes/);
+  assert.equal(await reader.evaluate(async id => (await (await BNStorage.open()).get(id)).edited, unsavedId), true);
+  await reload(reader);
+  assert.equal((await network(reader)).name, "Unsaved but not lost");
+  assert.match(await reader.locator("#evidence-bar").innerText(), /winter = yes/);
+  console.log("PASS storage recovery: unsaved model, evidence and undo survive focus; handover waits for persistence");
+  await quota.close();
+
+  const demos = await browser.newContext();
+  const demoPage = await demos.newPage();
+  await demoPage.goto(base);
+  await ready(demoPage);
+  await demoPage.locator('[data-action="demo"]').click();
+  await demoPage.locator('[data-demo="random"]').click();
+  await ready(demoPage);
+  const randomId = await demoPage.evaluate(() => sessionStorage.getItem("bn-editor-current"));
+  const firstRandom = await network(demoPage);
+  await demoPage.locator('[data-action="demo"]').click();
+  await demoPage.locator('[data-demo="houseplant"]').click();
+  await ready(demoPage);
+  await demoPage.locator('[data-action="demo"]').click();
+  await demoPage.locator('[data-demo="random"]').click();
+  await ready(demoPage);
+  await demoPage.waitForFunction(id => sessionStorage.getItem("bn-editor-current") === id && !document.querySelector("main").inert, randomId);
+  assert.notDeepEqual(await network(demoPage), firstRandom);
+  console.log("PASS demos: reopening an unedited Random network rebuilds it without accumulating copies");
+
+  await demoPage.locator('[data-action="demo"]').click();
+  await demoPage.locator('[data-demo="houseplant"]').click();
+  await ready(demoPage);
+  const demoWriter = await demos.newPage();
+  await demoWriter.goto(base + "?view");
+  await ready(demoWriter);
+  await demoWriter.evaluate(async id => {
+    await new Promise(resolve => navigator.locks.request("bn-editor:network:" + id, async () => {
+      resolve();
+      await new Promise(release => { window.finishDemoEdit = release; });
+    }));
+  }, randomId);
+  await ready(demoPage);
+  await demoPage.locator('[data-action="demo"]').click();
+  await demoPage.locator('[data-demo="random"]').click();
+  await demoPage.waitForFunction(() => document.querySelector("main").inert);
+  // A lock-holding writer finishes an edit after the opener has selected the unedited copy.
+  await demoWriter.evaluate(async id => {
+    const db = await BNStorage.open(), record = await db.get(id);
+    record.name = record.net.name = "Edited while reopening";
+    record.edited = true;
+    await db.put(record);
+    window.finishDemoEdit();
+  }, randomId);
+  await demoPage.waitForFunction(id => sessionStorage.getItem("bn-editor-current") !== id && !document.querySelector("main").inert, randomId);
+  assert.equal((await network(demoPage)).name, "Random");
+  await switchTo(demoPage, randomId);
+  assert.equal((await network(demoPage)).name, "Edited while reopening");
+  console.log("PASS demo contention: an edit made while ownership is pending survives; a new demo copy opens instead");
+  await demos.close();
 
   // An existing installation's old menu migrates without changing IDs, evidence or network data.
   const legacy = await browser.newContext();
@@ -205,11 +412,89 @@ try {
   await switchTo(old, "legacy");
   assert.equal((await network(old)).name, "Existing network");
   await rename(old, "Migrated and editable");
-  await old.reload();
-  await ready(old);
+  await reload(old);
   assert.equal((await network(old)).name, "Migrated and editable");
   console.log("PASS migration: viewer → editor retains legacy network, editable and reloadable");
+  old.once("dialog", dialog => dialog.accept());
+  await old.locator('[data-action="networks"]').click();
+  await old.locator('[data-delete-net="legacy"]').click();
+  await old.waitForFunction(() => sessionStorage.getItem("bn-editor-current") !== "legacy" && !document.querySelector("main").inert);
+  await reload(old);
+  assert.equal((await network(old)).nodes.length, 0);
+  await old.locator('[data-action="networks"]').click();
+  await old.locator("#networks-menu").waitFor({ state: "visible" });
+  assert.equal(await old.locator('[data-net="legacy"]').count(), 0);
+  assert.notEqual(await old.evaluate(() => localStorage.getItem("bn-editor-net:legacy")), null);
+  console.log("PASS migration backup: deleting the last migrated network does not resurrect its old keys on reload");
   await legacy.close();
+
+  for (const format of ["per-network", "single-network"]) {
+    const migration = await browser.newContext();
+    await migration.addInitScript(format => {
+      if (sessionStorage.getItem("seeded")) return;
+      sessionStorage.setItem("seeded", "1");
+      const n = { name: "Legacy rain", nextId: 2, nodes: [{ id: 1, name: "rain", type: "labelized", labels: ["wet", "dry"], cpt: [0.23, 0.77], x: 0, y: 0 }], arcs: [] };
+      const evidence = [[1, "dry"]];
+      if (format === "per-network") {
+        localStorage.setItem("bn-editor-entry:rain", JSON.stringify({ id: "rain", name: n.name, nodes: 1, edited: true, updated: 3 }));
+        localStorage.setItem("bn-editor-net:rain", JSON.stringify(n));
+        localStorage.setItem("bn-editor-evidence:rain", JSON.stringify(evidence));
+        // Abort after request success: neither the records nor the migration marker may commit.
+        const put = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function (...args) {
+          const request = put.apply(this, args);
+          if (this.name === "networks") request.addEventListener("success", () => this.transaction.abort());
+          return request;
+        };
+      } else {
+        localStorage.setItem("bn-editor-network", JSON.stringify(n));
+        localStorage.setItem("bn-editor-evidence", JSON.stringify(evidence));
+      }
+    }, format);
+    const page = await migration.newPage();
+    await page.goto(base);
+    if (format === "per-network") {
+      await page.waitForFunction(() => document.querySelector("#tab-status").textContent.startsWith("Couldn't open your saved networks"));
+      assert.equal(await page.locator("main").evaluate(el => el.inert), true);
+      await page.reload(); // New realm removes the injected failure; retry the original data.
+    }
+    await ready(page);
+    const migrated = await network(page);
+    assert.equal(migrated.name, "Legacy rain");
+    assert.deepEqual(migrated.nodes[0].cpt, [0.23, 0.77]);
+    assert.match(await page.locator("#evidence-bar").innerText(), /rain = dry/);
+    await reload(page);
+    assert.match(await page.locator("#evidence-bar").innerText(), /rain = dry/);
+    console.log(`PASS ${format} migration: CPT and evidence retained${format === "per-network" ? "; aborted migration retries atomically" : ""}`);
+    await migration.close();
+  }
+
+  const links = await browser.newContext();
+  const linked = await links.newPage();
+  const shared = demoFixtures.find(d => d.id === "wet-grass").build();
+  shared.name = "Shared rain";
+  await linked.goto(base + "#net=" + deflateRawSync(P.exportPython(shared)).toString("base64url"));
+  await ready(linked);
+  await linked.waitForFunction(() => bnEditor.net.name === "Shared rain" && !document.querySelector("main").inert);
+  const fallbackId = await linked.evaluate(() => sessionStorage.getItem("bn-editor-current"));
+  const other = await links.newPage();
+  await other.goto(base);
+  await ready(other);
+  assert.equal((await network(other)).nodes.length, 8); // The unedited link is not saved yet.
+  await ready(linked);
+  await linked.locator('[data-node="3"] [data-state="0"]').click();
+  const linkedId = await linked.evaluate(() => sessionStorage.getItem("bn-editor-current"));
+  assert.notEqual(linkedId, fallbackId);
+  assert.equal(new URL(linked.url()).hash, "");
+  await switchTo(other, linkedId);
+  assert.equal((await network(other)).name, "Shared rain");
+  assert.equal((await network(other)).nodes.length, 4);
+  assert.match(await other.locator("#evidence-bar").innerText(), /rain = yes/);
+  await reload(linked);
+  assert.equal((await network(linked)).name, "Shared rain");
+  assert.match(await linked.locator("#evidence-bar").innerText(), /rain = yes/);
+  console.log("PASS linked import: first edit saves a separate network with evidence; handover and reload retain it");
+  await links.close();
 
   const fresh = await browser.newContext();
   const first = await fresh.newPage(), second = await fresh.newPage();
