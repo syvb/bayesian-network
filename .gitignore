@@ -1,5 +1,5 @@
 # Playwright for tools/check-*.mjs (installed with npm install --no-save)
-node_modules/
+node_modules
 test-results/
 playwright-report/
 
