@@ -24,14 +24,31 @@
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
   let viewer = new URLSearchParams(location.search).has("view");
+  // ?theme=light or dark (set by embed code) fixes the colours; otherwise they follow the system.
+  let forcedTheme = /^(light|dark)$/.exec(new URLSearchParams(location.search).get("theme") || "")?.[0];
+  if (forcedTheme) document.documentElement.classList.add("theme-" + forcedTheme);
   // Viewers are independent of browser storage, including in opaque-origin sandboxed frames.
+  // Settings a reader changes in the viewer are remembered here, and kept if they open the editor.
+  const viewerChoices = new Set();
   function preference(key) {
     if (viewer) return null;
     try { return localStorage.getItem(key); } catch { return null; }
   }
   function savePreference(key, value) {
-    if (!viewer) try { localStorage.setItem(key, value); } catch { /* optional preference */ }
+    if (viewer) viewerChoices.add(key);
+    else try { localStorage.setItem(key, value); } catch { /* optional preference */ }
   }
+  // The editor keeps networks in browser storage, which a sandboxed frame (or a tab it opened
+  // without allow-popups-to-escape-sandbox) can't use; there, nothing offers to open the editor.
+  const storageWorks = (() => {
+    try {
+      localStorage.setItem("bn-editor-probe", "1");
+      localStorage.removeItem("bn-editor-probe");
+      sessionStorage.getItem("bn-editor-probe");
+      return true;
+    } catch { return false; }
+  })();
+  if (!storageWorks) document.body.classList.add("no-storage");
 
   let net;
   let selNodes = new Set();
@@ -1691,9 +1708,17 @@
     return { image, code };
   }
 
-  async function downloadImage(kind) {
+  // Runs fn with the page in the light or dark theme (or as it is, for ""), for exports.
+  function withTheme(theme, fn) {
+    const root = document.documentElement, was = root.className;
+    if (theme) { root.classList.remove("theme-light", "theme-dark"); root.classList.add("theme-" + theme); }
+    try { return fn(); } finally { root.className = was; }
+  }
+  const themeColor = (theme, name) => withTheme(theme, () => getComputedStyle(document.documentElement).getPropertyValue(name).trim());
+
+  async function downloadImage(kind, theme = "") {
     if (!net.nodes.length) { toast("The network is empty"); return; }
-    const { image, code } = exportImage();
+    const { image, code } = withTheme(theme, exportImage);
     if (kind === "svg") download(new Blob([image.svg], { type: "image/svg+xml" }), fileName(".svg"));
     else download(await BNImage.svgToPng(image, code), fileName(".png"));
   }
@@ -1826,7 +1851,7 @@
   // A link with the current network (and evidence) in its hash; ?view opens it in the viewer.
   async function netLink(asViewer) {
     const packed = await pipe(new TextEncoder().encode(exportCode()), new CompressionStream("deflate-raw"));
-    return location.href.replace(/[?#].*$/, "") + (asViewer ? "?view" : "") + "#net=" + toBase64Url(packed);
+    return location.href.replace(/[?#].*$/, "") + (asViewer ? "?view" + (forcedTheme ? "&theme=" + forcedTheme : "") : "") + "#net=" + toBase64Url(packed);
   }
 
   // At about 800px wide, sized to the network's shape, plus title and evidence bars.
@@ -1840,13 +1865,21 @@
     return Math.round(Math.max(360, Math.min(900, 800 * (y1 - y0) / Math.max(1, x1 - x0) + 140)));
   }
 
-  // HTML that embeds the viewer, optionally showing an image until ready.
-  function embedCode(url, imageUrl, height) {
+  // HTML that embeds the viewer, optionally showing an image until ready. `theme` is "light",
+  // "dark" or "" to follow the reader's system; `image` is an image URL, or {light, dark} URLs to
+  // pick from by the reader's system.
+  function embedCode(url, image, height, theme) {
     const attr = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
-    const background = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
-    if (imageUrl) return `<div style="position: relative; height: ${height}px; background: ${background}; border: 1px solid #d0d4dc; border-radius: 8px; overflow: hidden;">
-  <a href="${attr(url)}" target="_blank" rel="noopener" style="display: block; height: 100%;"><img src="${attr(imageUrl)}" alt="${attr(net.name || "Bayesian network")}" style="display: block; width: 100%; height: 100%; object-fit: contain;"></a>
-  <iframe data-src="${attr(url)}" title="${attr(net.name || "Bayesian network")}" aria-hidden="true" tabindex="-1" style="position: absolute; inset: 0; width: 100%; height: 100%; border: 0; visibility: hidden;"></iframe>
+    const color = (name) => (theme ? themeColor(theme, name) : `light-dark(${themeColor("light", name)}, ${themeColor("dark", name)})`);
+    const frame = `color-scheme: ${theme || "light dark"}; border: 1px solid ${color("--border")}; border-radius: 8px;`;
+    const title = attr(net.name || "Bayesian network");
+    const imgStyle = "display: block; width: 100%; height: 100%; object-fit: contain;";
+    const img = typeof image === "object" && image
+      ? `<picture style="display: block; height: 100%;"><source media="(prefers-color-scheme: dark)" srcset="${attr(image.dark)}"><img src="${attr(image.light)}" alt="${title}" style="${imgStyle}"></picture>`
+      : `<img src="${attr(image)}" alt="${title}" style="${imgStyle}">`;
+    if (image) return `<div style="position: relative; height: ${height}px; background: ${color("--bg")}; ${frame} overflow: hidden;">
+  <a href="${attr(url)}" target="_blank" rel="noopener" style="display: block; height: 100%;">${img}</a>
+  <iframe data-src="${attr(url)}" title="${title}" aria-hidden="true" tabindex="-1" style="position: absolute; inset: 0; width: 100%; height: 100%; border: 0; visibility: hidden;"></iframe>
   <script>
     (function () {
       var box = document.currentScript.parentElement, frame = box.querySelector('iframe');
@@ -1864,14 +1897,14 @@
     })();
   </script>
 </div>`;
-    return `<iframe src="${attr(url)}" title="${attr(net.name || "Bayesian network")}" width="100%" height="${height}" style="border: 1px solid #d0d4dc; border-radius: 8px;" loading="lazy"></iframe>`;
+    return `<iframe src="${attr(url)}" title="${title}" width="100%" height="${height}" style="${frame}" loading="lazy"></iframe>`;
   }
 
-  let embedUrl = "", embedImageData = "";
+  let embedUrl = "", embedImageData = {};
   async function openEmbed(url) {
     if (!net.nodes.length) { toast("The network is empty"); return; }
     embedUrl = url || await netLink(true);
-    embedImageData = "";
+    embedImageData = {};
     $("#embed-height").value = embedHeight();
     $("#embed-image").checked = false;
     $("#embed-image-source").value = "url";
@@ -1880,9 +1913,13 @@
     $("#embed-dialog").showModal();
   }
 
+  // A data: URL of the canvas as an SVG in the light or dark theme, made once per dialog.
+  const embedImage = (theme) => (embedImageData[theme] ??= "data:image/svg+xml;charset=utf-8," + encodeURIComponent(withTheme(theme, exportImage).image.svg));
+
   function updateEmbedCode() {
     const showImage = $("#embed-image").checked;
     const hosted = showImage && $("#embed-image-source").value === "url";
+    const theme = $("#embed-theme").value;
     $("#embed-image-settings").hidden = !showImage;
     $("#embed-image-hosted").hidden = !hosted;
     const input = $("#embed-image-url");
@@ -1892,24 +1929,24 @@
       input.setCustomValidity("Enter an http:// or https:// image URL.");
     }
     $("#embed-source-note").textContent = hosted
-      ? "Download the SVG, upload it unchanged to a host that allows cross-origin downloads (CORS), then paste its URL. The viewer will load the network from that image."
-      : "Includes a snapshot of this network directly in the HTML. No image upload or download is needed, but the code is larger and your site must allow data: images.";
+      ? `Download the SVG, upload it unchanged to a host that allows cross-origin downloads (CORS), then paste its URL. The viewer will load the network from that image.${theme ? ` Download SVG uses the ${theme} theme.` : " An image has one set of colours, so readers whose system theme differs from it see the image's colours until the viewer loads; pick Light or Dark to match it."}`
+      : `Includes a snapshot of this network directly in the HTML${theme ? "" : ", in both light and dark colours"}. No image upload or download is needed, but the code is larger and your site must allow data: images.`;
     const valid = $("#embed-height").checkValidity() && input.checkValidity();
     document.querySelector('[data-action="do-copy-embed"]').disabled = !valid;
     document.querySelector('[data-action="do-copy-embed"]').textContent = "Copy embed code";
-    if (showImage && !hosted && valid && !embedImageData) {
-      const { image } = exportImage();
-      embedImageData = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(image.svg);
-    }
-    const image = showImage && valid ? (hosted ? new URL(rawUrl(input.value)).href : embedImageData) : null;
+    const image = !showImage || !valid ? null
+      : hosted ? new URL(rawUrl(input.value)).href
+      : theme ? embedImage(theme) : { light: embedImage("light"), dark: embedImage("dark") };
     const url = new URL(embedUrl);
     if (hosted && image) {
       url.search = "?view&src=" + encodeURIComponent(image);
       url.hash = "";
     }
     if (image) url.search += "&image-first";
-    $("#embed-code").value = valid ? embedCode(url.href, image, +$("#embed-height").value) : "";
+    if (theme) url.search += "&theme=" + theme;
+    $("#embed-code").value = valid ? embedCode(url.href, image, +$("#embed-height").value, theme) : "";
   }
+  $("#embed-theme").addEventListener("change", updateEmbedCode);
   $("#embed-height").addEventListener("input", updateEmbedCode);
   $("#embed-image").addEventListener("change", updateEmbedCode);
   $("#embed-image-source").addEventListener("change", updateEmbedCode);
@@ -2134,7 +2171,7 @@
       openEmbed();
     },
     "do-copy-embed": copyEmbed,
-    "embed-download-image": () => downloadImage("svg"),
+    "embed-download-image": () => downloadImage("svg", $("#embed-theme").value),
     "close-embed": () => $("#embed-dialog").close(),
     "gist-copy-embed": () => openEmbed($("#gist-link").value.replace("?src=", "?view&src=")),
     "open-viewer": async () => window.open(await netLink(true), "_blank", "noopener"),
@@ -2309,9 +2346,21 @@
     if (embedded) { window.open(await netLink(false), "_blank", "noopener"); return; }
     viewer = false;
     if (!unsaved) unsaved = { source: null, importing: false };
+    // The editor uses your saved settings, except any the reader just changed in the viewer.
+    // Probabilities stay shown: the reader was looking at them.
+    const saved = (key) => (viewerChoices.has(key) ? null : preference(key));
+    const was = [softMode, softKind, clickMode].join();
+    if (saved(SOFT_KEY) !== null) softMode = saved(SOFT_KEY) === "1";
+    if (saved(SOFT_KIND_KEY) !== null) softKind = saved(SOFT_KIND_KEY) === "probabilities" ? "probabilities" : "likelihoods";
+    if (saved(CLICK_KEY) !== null) clickMode = saved(CLICK_KEY) === "intervene" ? "intervene" : "observe";
+    if ([softMode, softKind, clickMode].join() !== was) closeSoftEditor(); // it was opened for the old settings
+    if (saved(PANEL_KEY) !== null) setPanelCollapsed(saved(PANEL_KEY) === "1");
     document.body.classList.remove("viewer");
     const url = new URL(location.href);
     url.searchParams.delete("view");
+    // the editor follows your system's theme, not the one an embed chose
+    url.searchParams.delete("theme");
+    if (forcedTheme) { document.documentElement.classList.remove("theme-" + forcedTheme); forcedTheme = undefined; }
     history.replaceState(null, "", url.href.replace("?#", "#").replace(/\?$/, ""));
     if (viewerEvidenceChanged) saveEvidence();
     render();

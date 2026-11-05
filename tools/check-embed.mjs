@@ -25,7 +25,8 @@ const server = createServer(async (req, res) => {
   } else if (url.pathname === "/article") {
     const src = url.searchParams.has("src") ? "?view&src=/network.py" : "?view" + hash;
     res.setHeader("Content-Type", "text/html");
-    res.end(`<iframe id="network" sandbox="allow-scripts allow-popups" src="/${src}" width="800" height="600"></iframe>`);
+    const sandbox = "allow-scripts allow-popups" + (url.searchParams.has("escape") ? " allow-popups-to-escape-sandbox" : "");
+    res.end(`<iframe id="network" sandbox="${sandbox}" src="/${src}" width="800" height="600"></iframe>`);
   } else if (url.pathname === "/network.py") res.end(code);
   else {
     try {
@@ -54,6 +55,9 @@ try {
         try { window[key]; return false; } catch (e) { return e.name === "SecurityError"; }
       }, key), true);
     }
+    // Without storage the editor can't work, so nothing offers it; Full screen still does.
+    assert.equal(await frame.locator('[data-action="open-editor"]').isVisible(), false);
+    assert.equal(await frame.locator('[data-action="open-viewer"]').isVisible(), true);
     const rain = frame.locator('.node[data-node="3"] [data-state="0"]');
     await rain.click();
     const evidence = await frame.locator("#evidence-bar").textContent();
@@ -78,12 +82,47 @@ try {
     assert.equal(await popup.locator("#evidence-bar").textContent(), evidence);
     assert.equal(await popup.evaluate(() => window.opener === null), true);
     assert.equal(await popup.locator('[data-action="open-viewer"]').isVisible(), false);
+    // the popup inherits the sandbox (no allow-popups-to-escape-sandbox), so no editor there either
+    assert.equal(await popup.locator('[data-action="open-editor"]').isVisible(), false);
     assert.equal(await popup.evaluate(() => location.hash.startsWith("#net=")), true);
     await popup.reload();
     await popup.waitForFunction(() => document.querySelectorAll(".node").length === 4);
     assert.equal(await popup.locator("#evidence-bar").textContent(), evidence);
     assert.deepEqual(errors, []);
     console.log(`PASS ${source}: storage-blocked embed → full-page viewer; evidence retained after reload`);
+    await context.close();
+  }
+
+  {
+    // With allow-popups-to-escape-sandbox, the full-page viewer has storage and offers the editor.
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(base + "/article?escape");
+    const frame = page.frames()[1];
+    await frame.waitForFunction(() => document.querySelectorAll(".node").length === 4);
+    const popupPromise = page.waitForEvent("popup");
+    await frame.locator('[data-action="open-viewer"]').click();
+    const popup = await popupPromise;
+    await popup.waitForFunction(() => document.querySelectorAll(".node").length === 4);
+    assert.equal(await popup.locator('[data-action="open-editor"]').isVisible(), true);
+    console.log("PASS escaped popup: full-page viewer offers the editor");
+
+    // Opening the editor from the viewer uses the saved settings, except those the reader changed.
+    const editorPage = await context.newPage();
+    await editorPage.goto(base + "/");
+    await editorPage.evaluate(() => {
+      localStorage.setItem("bn-editor-soft-evidence", "1");
+      localStorage.setItem("bn-editor-click-mode", "intervene");
+    });
+    await editorPage.goto(base + "/?view" + hash);
+    await editorPage.waitForFunction(() => document.querySelectorAll(".node").length === 4 && !document.body.classList.contains("viewer-loading"));
+    assert.equal(await editorPage.locator("[data-soft-mode]").isChecked(), false);
+    await editorPage.locator('[data-click-mode="intervene"]').click();
+    await editorPage.locator('[data-click-mode="observe"]').click(); // the reader's own choice
+    await editorPage.locator('[data-action="open-editor"]').click();
+    assert.equal(await editorPage.locator("[data-soft-mode]").isChecked(), true);
+    assert.match(await editorPage.locator('[data-click-mode="observe"]').getAttribute("class"), /\bon\b/);
+    console.log("PASS open editor: saved settings restored, reader's choices kept");
     await context.close();
   }
 
@@ -266,7 +305,7 @@ try {
     await article.goto(base.replace("127.0.0.1", "localhost") + "/image-article", { waitUntil: "domcontentloaded" });
     await article.waitForFunction(() => document.querySelector("img")?.naturalWidth > 0);
     assert.equal(await article.locator("iframe").isVisible(), false);
-    assert.equal(await article.locator("img").evaluate(img => getComputedStyle(img.parentElement.parentElement).backgroundColor), "rgb(246, 247, 249)");
+    assert.equal(await article.locator("img").evaluate(img => getComputedStyle(img.closest("div")).backgroundColor), "rgb(246, 247, 249)");
     const imageCode = await article.locator("img").getAttribute("src");
     const snapshot = P.importPython(await editor.evaluate(url => BNImage.codeFromSvg(decodeURIComponent(url.slice(url.indexOf(",") + 1))), imageCode));
     assert.equal(snapshot.net.name, snapshotName);
@@ -284,6 +323,27 @@ try {
     await article.close();
     console.log(`PASS data URL: ${fail ? "app failure retains image" : reducedMotion ? "reduced motion skips fade" : "preview fades to hash viewer"}; no hosted image request, title and evidence retained`);
   }
+  // Themes: by default the embed follows the reader's system (both images, light-dark background);
+  // a chosen theme is fixed for every reader.
+  for (const [theme, scheme, bg] of [["", "dark", "rgb(22, 25, 31)"], ["", "light", "rgb(246, 247, 249)"], ["dark", "light", "rgb(22, 25, 31)"], ["light", "dark", "rgb(246, 247, 249)"]]) {
+    await editor.locator("#embed-theme").selectOption(theme);
+    await editor.locator('[data-action="do-copy-embed"]').click();
+    imageEmbed = await editor.evaluate(() => window.copied);
+    assert.equal(imageEmbed.includes("&amp;theme="), !!theme);
+    assert.equal(imageEmbed.includes("<picture"), !theme);
+    const article = await context.newPage();
+    await article.emulateMedia({ colorScheme: scheme });
+    await article.goto(base.replace("127.0.0.1", "localhost") + "/image-article");
+    await article.waitForFunction(() => document.querySelector("img")?.naturalWidth > 0);
+    assert.equal(await article.locator("img").evaluate(img => getComputedStyle(img.closest("div")).backgroundColor), bg);
+    const shown = await article.locator("img").evaluate(img => decodeURIComponent(img.currentSrc));
+    assert.ok(shown.includes(`fill="${bg === "rgb(22, 25, 31)" ? "#16191f" : "#f6f7f9"}"`) || shown.includes(bg), `image in the ${theme || scheme} theme`);
+    await article.locator("iframe").waitFor({ state: "visible" });
+    assert.equal(await article.frames()[1].evaluate(() => getComputedStyle(document.body).backgroundColor), bg);
+    await article.close();
+  }
+  await editor.locator("#embed-theme").selectOption("");
+  console.log("PASS themes: reader's system by default (both images), or a fixed light or dark theme");
   await editor.locator("#embed-image-source").selectOption("url");
   assert.equal(await editor.locator("#embed-image-url").inputValue(), base + "/uploaded.svg?a=1&b=2");
   await editor.locator("#embed-image").uncheck();

@@ -127,6 +127,11 @@
       <p class="muted">Paste the HTML below into your web page. The viewer fills the available width.</p>
       <div class="embed-options">
         <label for="embed-height">Height <input id="embed-height" type="number" min="200" max="2000" step="1" required> px</label>
+        <label for="embed-theme">Theme <select id="embed-theme">
+          <option value="">Match the reader's system</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select></label>
         <label><input id="embed-image" type="checkbox" aria-describedby="embed-image-note"> Show image while loading</label>
       </div>
       <p id="embed-image-note" class="muted">Shows an image immediately and keeps it if the app fails. Requires scripts on the host page.</p>

@@ -15,8 +15,10 @@
   --intervened: #7048e8;
   color-scheme: light dark;
 }
+/* Dark colours follow the system, unless a viewer link forces a theme (?theme=light or dark),
+   which sets .theme-light / .theme-dark on the root. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not(.theme-light) {
     --bg: #16191f;
     --surface: #1e222a;
     --border: #353b47;
@@ -33,6 +35,24 @@
     --intervened: #a98bff;
   }
 }
+:root.theme-dark {
+  --bg: #16191f;
+  --surface: #1e222a;
+  --border: #353b47;
+  --text: #e3e6ec;
+  --muted: #949cab;
+  --accent: #6d9bf1;
+  --accent-soft: #233350;
+  --danger: #f07171;
+  --node: #262b35;
+  --node-border: #6c7484;
+  --arc: #9aa2b1;
+  --grid: #20242c;
+  --observed: #ff8a4c;
+  --intervened: #a98bff;
+  color-scheme: dark;
+}
+:root.theme-light { color-scheme: light; }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
@@ -640,6 +660,7 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 .viewer-only { display: none; }
 body.viewer .viewer-only { display: revert; }
 body:not(.embedded) .embed-only { display: none; }
+body.no-storage [data-action="open-editor"] { display: none; }
 body.viewer .toolbar > :not(.brand, .viewer-only, .grow, [data-action="fit"]) { display: none; }
 body.viewer #viewer-title { font-weight: 600; margin-right: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 body.viewer #side, body.viewer #cpt-dock { display: none; }
