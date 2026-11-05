@@ -255,6 +255,18 @@ dialog textarea {
 }
 .dialog-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 
+#embed-dialog { width: min(640px, 92vw); }
+#embed-dialog p { font-size: 13px; line-height: 1.45; margin: 0 0 16px; }
+.embed-options { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin: 18px 0 8px; }
+.embed-options label { display: inline-flex; align-items: center; gap: 6px; }
+#embed-height { width: 84px; }
+#embed-image-source { margin: 0 0 12px 8px; }
+.embed-url-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 8px; }
+#embed-image-url { flex: 1 1 240px; }
+#embed-dialog label[for="embed-code"] { display: block; margin-bottom: 6px; }
+#embed-code { height: min(240px, 35vh); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); }
+#embed-dialog:has(#embed-image:checked) #embed-code { height: min(180px, 25vh); }
+
 #toast {
   position: fixed;
   bottom: 18px;

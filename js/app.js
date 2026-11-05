@@ -1658,8 +1658,7 @@
 
   // The canvas as it is shown now (with probabilities and evidence when that view is on), minus
   // the selection, with the pyAgrum code embedded so the image can be imported again.
-  async function downloadImage(kind) {
-    if (!net.nodes.length) { toast("The network is empty"); return; }
+  function exportImage() {
     const code = exportCode();
     const saved = { nodes: selNodes, arc: selArc };
     selNodes = new Set();
@@ -1689,6 +1688,12 @@
       selArc = saved.arc;
       render();
     }
+    return { image, code };
+  }
+
+  async function downloadImage(kind) {
+    if (!net.nodes.length) { toast("The network is empty"); return; }
+    const { image, code } = exportImage();
     if (kind === "svg") download(new Blob([image.svg], { type: "image/svg+xml" }), fileName(".svg"));
     else download(await BNImage.svgToPng(image, code), fileName(".png"));
   }
@@ -1799,6 +1804,8 @@
 
   // ------------------------------------------------------------ ?src= links
 
+  let linkedImage = null; // the successfully imported image, usable until this network changes
+
   // GitHub "blob" and gist page URLs don't allow cross-origin downloads; their raw versions do.
   function rawUrl(url) {
     const blob = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/blob\/(.+)$/.exec(url);
@@ -1822,24 +1829,98 @@
     return location.href.replace(/[?#].*$/, "") + (asViewer ? "?view" : "") + "#net=" + toBase64Url(packed);
   }
 
-  // HTML that embeds the viewer for `url` in an iframe, sized to the network's shape.
-  function embedCode(url) {
+  // At about 800px wide, sized to the network's shape, plus title and evidence bars.
+  function embedHeight() {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const n of net.nodes) {
       const { w, h } = nodeSize(n, true);
       x0 = Math.min(x0, n.x - w / 2); x1 = Math.max(x1, n.x + w / 2);
       y0 = Math.min(y0, n.y - h / 2); y1 = Math.max(y1, n.y + h / 2);
     }
-    // at about 800px wide, plus the title bar and evidence bar
-    const height = Math.round(Math.max(360, Math.min(900, 800 * (y1 - y0) / Math.max(1, x1 - x0) + 140)));
+    return Math.round(Math.max(360, Math.min(900, 800 * (y1 - y0) / Math.max(1, x1 - x0) + 140)));
+  }
+
+  // HTML that embeds the viewer, optionally showing an image until ready.
+  function embedCode(url, imageUrl, height) {
     const attr = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    const background = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+    if (imageUrl) return `<div style="position: relative; height: ${height}px; background: ${background}; border: 1px solid #d0d4dc; border-radius: 8px; overflow: hidden;">
+  <a href="${attr(url)}" target="_blank" rel="noopener" style="display: block; height: 100%;"><img src="${attr(imageUrl)}" alt="${attr(net.name || "Bayesian network")}" style="display: block; width: 100%; height: 100%; object-fit: contain;"></a>
+  <iframe data-src="${attr(url)}" title="${attr(net.name || "Bayesian network")}" aria-hidden="true" tabindex="-1" style="position: absolute; inset: 0; width: 100%; height: 100%; border: 0; visibility: hidden;"></iframe>
+  <script>
+    (function () {
+      var box = document.currentScript.parentElement, frame = box.querySelector('iframe');
+      var origin = new URL(frame.dataset.src).origin;
+      function ready(event) {
+        if (event.source !== frame.contentWindow || event.origin !== origin || event.data !== 'bn-viewer-ready') return;
+        box.querySelector('a').inert = true;
+        frame.style.visibility = 'visible';
+        frame.removeAttribute('aria-hidden');
+        frame.removeAttribute('tabindex');
+        window.removeEventListener('message', ready);
+      }
+      window.addEventListener('message', ready);
+      frame.src = frame.dataset.src;
+    })();
+  </script>
+</div>`;
     return `<iframe src="${attr(url)}" title="${attr(net.name || "Bayesian network")}" width="100%" height="${height}" style="border: 1px solid #d0d4dc; border-radius: 8px;" loading="lazy"></iframe>`;
   }
 
-  async function copyEmbed(url) {
-    const code = embedCode(url);
+  let embedUrl = "", embedImageData = "";
+  async function openEmbed(url) {
+    if (!net.nodes.length) { toast("The network is empty"); return; }
+    embedUrl = url || await netLink(true);
+    embedImageData = "";
+    $("#embed-height").value = embedHeight();
+    $("#embed-image").checked = false;
+    $("#embed-image-source").value = "url";
+    $("#embed-image-url").value = !url && unsaved && linkedImage?.netId === netId ? linkedImage.url : "";
+    updateEmbedCode();
+    $("#embed-dialog").showModal();
+  }
+
+  function updateEmbedCode() {
+    const showImage = $("#embed-image").checked;
+    const hosted = showImage && $("#embed-image-source").value === "url";
+    $("#embed-image-settings").hidden = !showImage;
+    $("#embed-image-hosted").hidden = !hosted;
+    const input = $("#embed-image-url");
+    input.disabled = !hosted;
+    input.setCustomValidity("");
+    if (hosted && input.checkValidity() && !/^https?:$/.test(new URL(input.value).protocol)) {
+      input.setCustomValidity("Enter an http:// or https:// image URL.");
+    }
+    $("#embed-source-note").textContent = hosted
+      ? "Download the SVG, upload it unchanged to a host that allows cross-origin downloads (CORS), then paste its URL. The viewer will load the network from that image."
+      : "Includes a snapshot of this network directly in the HTML. No image upload or download is needed, but the code is larger and your site must allow data: images.";
+    const valid = $("#embed-height").checkValidity() && input.checkValidity();
+    document.querySelector('[data-action="do-copy-embed"]').disabled = !valid;
+    document.querySelector('[data-action="do-copy-embed"]').textContent = "Copy embed code";
+    if (showImage && !hosted && valid && !embedImageData) {
+      const { image } = exportImage();
+      embedImageData = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(image.svg);
+    }
+    const image = showImage && valid ? (hosted ? new URL(rawUrl(input.value)).href : embedImageData) : null;
+    const url = new URL(embedUrl);
+    if (hosted && image) {
+      url.search = "?view&src=" + encodeURIComponent(image);
+      url.hash = "";
+    }
+    if (image) url.search += "&image-first";
+    $("#embed-code").value = valid ? embedCode(url.href, image, +$("#embed-height").value) : "";
+  }
+  $("#embed-height").addEventListener("input", updateEmbedCode);
+  $("#embed-image").addEventListener("change", updateEmbedCode);
+  $("#embed-image-source").addEventListener("change", updateEmbedCode);
+  $("#embed-image-url").addEventListener("input", updateEmbedCode);
+
+  async function copyEmbed() {
+    if (!$("#embed-dialog form").reportValidity()) return;
+    const code = $("#embed-code").value;
     try {
       await navigator.clipboard.writeText(code);
+      document.querySelector('[data-action="do-copy-embed"]').textContent = "Copied!";
       toast("Copied the embed code: paste it into a web page's HTML");
     } catch {
       prompt("Copy this embed code:", code);
@@ -1873,7 +1954,7 @@
     // The source names the link by a hash of it, since the link itself can be very long.
     let h = 2166136261;
     for (let i = 0; i < hash.length; i++) h = Math.imul(h ^ hash.charCodeAt(i), 16777619);
-    await importLink(new File([code], "network.py"), "net:" + (h >>> 0).toString(36));
+    return importLink(new File([code], "network.py"), "net:" + (h >>> 0).toString(36));
   }
   window.addEventListener("hashchange", loadFromHash);
 
@@ -1959,7 +2040,9 @@
     const head = new TextDecoder().decode(bytes.subarray(0, 512));
     const name = bytes[0] === 0x89 && head.startsWith("PNG", 1) ? "network.png"
       : /^\s*(<\?xml[^>]*>\s*)?<svg\b/.test(head) ? "network.svg" : "network.py";
-    await importLink(new File([bytes], name), "src:" + src);
+    const ok = await importLink(new File([bytes], name), "src:" + src);
+    if (ok && name !== "network.py" && /^https?:$/.test(url.protocol)) linkedImage = { url: url.href, netId };
+    return ok;
   }
 
   // Imports a linked file as a network of its own, so opening a link never replaces other work.
@@ -2011,6 +2094,7 @@
     updateButtons();
     updateNetworkButton();
     if (!viewer) toast(`Opened “${net.name}” from the link (${net.nodes.length} variables). It's saved to your networks once you change it.`);
+    return true;
   }
 
   // Editing the code after an import offers to import it again.
@@ -2044,12 +2128,15 @@
     share: () => toggleShareMenu(),
     "copy-link": () => { toggleShareMenu(false); shareLink(); },
     "copy-viewer-link": () => { toggleShareMenu(false); shareLink(true); },
-    "copy-embed": async () => {
+    "copy-embed": () => {
       toggleShareMenu(false);
-      if (!net.nodes.length) { toast("The network is empty"); return; }
-      copyEmbed(await netLink(true));
+      document.querySelector('[data-action="share"]').focus();
+      openEmbed();
     },
-    "gist-copy-embed": () => copyEmbed($("#gist-link").value.replace("?src=", "?view&src=")),
+    "do-copy-embed": copyEmbed,
+    "embed-download-image": () => downloadImage("svg"),
+    "close-embed": () => $("#embed-dialog").close(),
+    "gist-copy-embed": () => openEmbed($("#gist-link").value.replace("?src=", "?view&src=")),
     "open-viewer": async () => window.open(await netLink(true), "_blank", "noopener"),
     "open-editor": openEditor,
     "gist-copy-viewer": async () => { await navigator.clipboard.writeText($("#gist-link").value.replace("?src=", "?view&src=")); toast("Copied the viewer link"); },
@@ -2083,7 +2170,7 @@
     };
     el.addEventListener("keydown", (e) => {
       e.stopPropagation(); // keep arrow keys from moving selected nodes
-      const items = [...el.querySelectorAll("button")];
+      const items = [...el.querySelectorAll("button")].filter((b) => !b.hidden);
       const i = items.indexOf(document.activeElement);
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -2194,9 +2281,25 @@
   updateButtons();
   requestAnimationFrame(fit);
   finishGistSignIn();
-  Promise.all([loadFromLink(), loadFromHash()]).finally(() => {
+  Promise.all([loadFromLink(), loadFromHash()]).then((loaded) => {
     document.body.classList.remove("viewer-loading");
     if (viewer) fit();
+    // A frame's load event can precede the asynchronous import. Only replace an image after
+    // a successful import and a rendered, fitted viewer; failures leave the fallback intact.
+    if (viewer && embedded && loaded.some(Boolean) && net.nodes.length) {
+      let fade;
+      if (new URLSearchParams(location.search).has("image-first") && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        fade = document.documentElement.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 50, easing: "ease-out" });
+        fade.pause();
+      }
+      // Hidden cross-origin frames may not receive animation frames until they are visible.
+      window.parent.postMessage("bn-viewer-ready", "*");
+      // Announce readiness first, then begin the crossfade when the revealed frame can paint.
+      if (fade) requestAnimationFrame(() => fade.play());
+    }
+  }).catch(() => {
+    document.body.classList.remove("viewer-loading");
+    toast("Couldn't open the linked network");
   });
 
   // Leaves the viewer for the full editor, keeping the evidence the reader set. From here the

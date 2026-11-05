@@ -36,7 +36,7 @@
       <div id="share-menu" class="menu" role="menu" hidden>
         <button role="menuitem" data-action="copy-link"><b>Copy link</b><span>Opens in the editor. The network is inside the link itself; nothing is uploaded</span></button>
         <button role="menuitem" data-action="copy-viewer-link"><b>Copy viewer link</b><span>Opens full screen with just the probabilities: readers can set evidence but not edit, and can switch to the editor</span></button>
-        <button role="menuitem" data-action="copy-embed"><b>Copy embed code</b><span>An &lt;iframe&gt; of the viewer to paste into a web page or blog post</span></button>
+        <button role="menuitem" data-action="copy-embed"><b>Copy embed code…</b><span>Customize a viewer to embed in a web page or blog post</span></button>
         <button role="menuitem" data-action="gist" hidden><b>Publish to GitHub Gist…</b><span>Uploads an unlisted copy to your GitHub account for a short link</span></button>
       </div>
     </span>
@@ -121,6 +121,40 @@
     </form>
   </dialog>
 
+  <dialog id="embed-dialog" aria-labelledby="embed-heading">
+    <form method="dialog">
+      <h2 id="embed-heading">Embed network</h2>
+      <p class="muted">Paste the HTML below into your web page. The viewer fills the available width.</p>
+      <div class="embed-options">
+        <label for="embed-height">Height <input id="embed-height" type="number" min="200" max="2000" step="1" required> px</label>
+        <label><input id="embed-image" type="checkbox" aria-describedby="embed-image-note"> Show image while loading</label>
+      </div>
+      <p id="embed-image-note" class="muted">Shows an image immediately and keeps it if the app fails. Requires scripts on the host page.</p>
+      <div id="embed-image-settings" hidden>
+        <label for="embed-image-source">Image source</label>
+        <select id="embed-image-source">
+          <option value="url">Hosted image URL</option>
+          <option value="data">Data URL (no upload)</option>
+        </select>
+        <div id="embed-image-hosted">
+          <label for="embed-image-url">Image URL</label>
+          <div class="embed-url-row">
+            <input id="embed-image-url" type="url" placeholder="https://example.com/network.svg" aria-describedby="embed-source-note" required disabled>
+            <button type="button" data-action="embed-download-image">Download SVG</button>
+          </div>
+        </div>
+        <p id="embed-source-note" class="muted"></p>
+      </div>
+      <label for="embed-code">Embed code</label>
+      <textarea id="embed-code" readonly spellcheck="false"></textarea>
+      <div class="dialog-actions">
+        <span class="grow"></span>
+        <button type="button" data-action="close-embed">Close</button>
+        <button type="submit" data-action="do-copy-embed" class="primary">Copy embed code</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="import-dialog">
     <form method="dialog">
       <h2>Import pyAgrum code</h2>
@@ -152,7 +186,7 @@
         <div class="gist-copy-row">
           <button type="button" data-action="gist-copy" class="primary" id="gist-copy">Copy link</button>
           <button type="button" data-action="gist-copy-viewer" id="gist-copy-viewer" title="A link that opens full screen with just the probabilities, without the editing tools">Copy viewer link</button>
-          <button type="button" data-action="gist-copy-embed" id="gist-copy-embed" title="An iframe of the viewer, to paste into a web page">Copy embed code</button>
+          <button type="button" data-action="gist-copy-embed" id="gist-copy-embed" title="Customize the viewer's embed code to paste into a web page">Copy embed code…</button>
         </div>
         <p class="muted"><a id="gist-page" target="_blank" rel="noopener">View or delete the gist on GitHub</a> · anyone with the link can see it.</p>
       </div>
