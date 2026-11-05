@@ -23,6 +23,16 @@
   const svg = $("#canvas"), viewport = $("#viewport"), panel = $("#panel"), inline = $("#inline-edit");
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
+  let viewer = new URLSearchParams(location.search).has("view");
+  // Viewers are independent of browser storage, including in opaque-origin sandboxed frames.
+  function preference(key) {
+    if (viewer) return null;
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+  function savePreference(key, value) {
+    if (!viewer) try { localStorage.setItem(key, value); } catch { /* optional preference */ }
+  }
+
   let net;
   let selNodes = new Set();
   let selArc = null; // {from, to}
@@ -31,24 +41,23 @@
   let undoStack = [], redoStack = [];
   let drag = null;
   let lastPointer = null; // world coordinates of the pointer, used by the N shortcut
-  let showProbs = localStorage.getItem(PROBS_KEY) !== "0";
+  let showProbs = preference(PROBS_KEY) !== "0";
   // node id -> observed state label (hard evidence), one likelihood per state (soft evidence), or
   // {target: probabilities} (soft evidence that sets the node's probabilities).
   // Editor state, not part of undo.
   let evidence = new Map();
   let inferenceCache = null;
-  let softMode = localStorage.getItem(SOFT_KEY) === "1";
+  let softMode = preference(SOFT_KEY) === "1";
   let softId = null; // node whose soft evidence editor is open
   // How the soft evidence editor enters evidence: "likelihoods" or "probabilities" (targets).
-  let softKind = localStorage.getItem(SOFT_KIND_KEY) === "probabilities" ? "probabilities" : "likelihoods";
+  let softKind = preference(SOFT_KIND_KEY) === "probabilities" ? "probabilities" : "likelihoods";
   const isTarget = (v) => !!(v && v.target);
   const isDo = (v) => !!(v && v.do !== undefined);
   // What clicking a state does: "observe" (evidence) or "intervene" (do(node = state)).
-  let clickMode = localStorage.getItem(CLICK_KEY) === "intervene" ? "intervene" : "observe";
+  let clickMode = preference(CLICK_KEY) === "intervene" ? "intervene" : "observe";
 
   // ?view opens the viewer: full screen probabilities without the editing tools, for sharing a
   // scenario. Readers can set evidence; nothing they do is saved until they open the editor.
-  let viewer = new URLSearchParams(location.search).has("view");
   let embedded = false;
   try { embedded = window.self !== window.top; } catch { embedded = true; }
   if (embedded) {
@@ -83,6 +92,7 @@
   // The saved networks: [{id, name, nodes, updated, source, edited}]. `source` names the link or
   // demo a network was opened from; `edited` says whether it changed since.
   function readIndex() {
+    if (viewer) return [];
     try {
       const list = JSON.parse(localStorage.getItem(INDEX_KEY));
       if (Array.isArray(list)) return list;
@@ -108,6 +118,11 @@
 
   // Picks the network this tab starts with, creating the first one on a first visit.
   function startNetwork() {
+    if (viewer) {
+      netId = newId();
+      net = BNDemos[0].build();
+      return;
+    }
     if (!readIndex().length) {
       let old = null;
       try { old = JSON.parse(localStorage.getItem(OLD_NET_KEY)); } catch {}
@@ -647,7 +662,7 @@
 
   function toggleProbs() {
     showProbs = !showProbs;
-    localStorage.setItem(PROBS_KEY, showProbs ? "1" : "0");
+    savePreference(PROBS_KEY, showProbs ? "1" : "0");
     document.querySelector('[data-action="probs"]').setAttribute("aria-pressed", showProbs);
     render();
     schedulePanel();
@@ -725,7 +740,7 @@
     const m = e.target.closest("[data-click-mode]");
     if (m) {
       clickMode = m.dataset.clickMode;
-      localStorage.setItem(CLICK_KEY, clickMode);
+      savePreference(CLICK_KEY, clickMode);
       if (clickMode === "intervene") closeSoftEditor();
       render();
       schedulePanel();
@@ -746,7 +761,7 @@
   evidenceBar.addEventListener("change", (e) => {
     if (!e.target.matches("[data-soft-mode]")) return;
     softMode = e.target.checked;
-    localStorage.setItem(SOFT_KEY, softMode ? "1" : "0");
+    savePreference(SOFT_KEY, softMode ? "1" : "0");
     if (!softMode) closeSoftEditor();
     render();
     schedulePanel();
@@ -882,7 +897,7 @@
       if (kind.dataset.softKind === softKind) return;
       const id = softId, vals = softValues(id, kind.dataset.softKind);
       softKind = kind.dataset.softKind;
-      localStorage.setItem(SOFT_KIND_KEY, softKind);
+      savePreference(SOFT_KIND_KEY, softKind);
       const next = new Map(evidence);
       next.set(id, softEntry(vals));
       setEvidence(next);
@@ -1360,11 +1375,11 @@
   function setPanelCollapsed(collapsed) {
     side.classList.toggle("collapsed", collapsed);
     $("#panel-toggle").setAttribute("aria-expanded", !collapsed);
-    localStorage.setItem(PANEL_KEY, collapsed ? "1" : "0");
+    savePreference(PANEL_KEY, collapsed ? "1" : "0");
   }
   $("#panel-toggle").addEventListener("click", () => setPanelCollapsed(true));
   panelStrip.addEventListener("click", () => setPanelCollapsed(false));
-  setPanelCollapsed(localStorage.getItem(PANEL_KEY) === "1");
+  setPanelCollapsed(preference(PANEL_KEY) === "1");
 
   function renderPanelContent() {
     const one = selNodes.size === 1 ? M.getNode(net, [...selNodes][0]) : null;
@@ -1916,6 +1931,7 @@
   }
 
   async function finishGistSignIn() {
+    if (viewer) return;
     const result = await BNGist.finishSignIn();
     if (!result) return;
     $("#gist-dialog").showModal();
@@ -1976,6 +1992,11 @@
     }
     if (!ok) {
       // Nothing was imported: go back to the network that was open.
+      if (viewer) {
+        net = M.createNetwork("Untitled");
+        refreshNetwork();
+        return;
+      }
       discardLinkedNetwork();
       const back = before && readNet(before) ? before : byRecent(readIndex())[0]?.id;
       if (back) switchNetwork(back);
@@ -2029,6 +2050,7 @@
       copyEmbed(await netLink(true));
     },
     "gist-copy-embed": () => copyEmbed($("#gist-link").value.replace("?src=", "?view&src=")),
+    "open-viewer": async () => window.open(await netLink(true), "_blank", "noopener"),
     "open-editor": openEditor,
     "gist-copy-viewer": async () => { await navigator.clipboard.writeText($("#gist-link").value.replace("?src=", "?view&src=")); toast("Copied the viewer link"); },
     gist: () => { toggleShareMenu(false); openGist(); },
@@ -2183,6 +2205,7 @@
     // Embedded in another page, the editor opens in a new tab, with the reader's evidence.
     if (embedded) { window.open(await netLink(false), "_blank", "noopener"); return; }
     viewer = false;
+    if (!unsaved) unsaved = { source: null, importing: false };
     document.body.classList.remove("viewer");
     const url = new URL(location.href);
     url.searchParams.delete("view");
