@@ -674,6 +674,16 @@ body.viewer-loading #canvas-wrap { visibility: hidden; }
 #node-tip[hidden] { display: none; }
 #node-tip p { margin: 4px 0 0; white-space: pre-wrap; line-height: 1.4; }
 #node-tip p.muted { font-size: 11px; }
+#node-tip.with-cpt { max-width: min(480px, calc(100% - 8px)); }
+.tip-cpt { border-collapse: collapse; margin-top: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.tip-cpt th, .tip-cpt td { padding: 2px 6px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.tip-cpt th { font-weight: 600; }
+.tip-cpt .par { text-align: left; color: var(--muted); }
+.tip-cpt .first { border-left: 1px solid var(--border); }
+.tip-cpt tbody tr:last-child td { border-bottom: none; }
+#node-sheet .sheet-cpt { margin-top: 8px; font-size: 14px; }
+#node-sheet .sheet-cpt summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
+#node-sheet .tip-cpt { font-size: 13px; }
 .node .info circle { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; }
 .node .gate { fill: var(--muted, #6b7280); font: 700 9px system-ui, sans-serif; letter-spacing: 0.04em; pointer-events: none; }
 .node .info text { fill: var(--accent); font: italic 700 10px Georgia, serif; }

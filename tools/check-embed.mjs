@@ -104,6 +104,15 @@ try {
     // Without storage the editor can't work, so nothing offers it; Full screen still does.
     assert.equal(await frame.locator('[data-action="open-editor"]').isVisible(), false);
     assert.equal(await frame.locator('[data-action="open-viewer"]').isVisible(), true);
+    // Hovering a node shows its probability table; Reset is off until something changes.
+    const wet = await frame.locator('.node[data-node="4"] text.name').boundingBox();
+    await page.mouse.move(wet.x + wet.width / 2, wet.y + wet.height / 2, { steps: 4 });
+    await frame.locator("#node-tip .tip-cpt").waitFor();
+    assert.equal(await frame.locator("#node-tip .tip-cpt tbody tr").count(), 4);
+    assert.match(await frame.locator("#node-tip .tip-cpt tbody tr").first().textContent(), /onyes99\.0%1\.0%/);
+    await page.mouse.move(2, 2);
+    const reset = frame.locator('[data-action="reset-viewer"]');
+    assert.equal(await reset.isDisabled(), true);
     const rain = frame.locator('.node[data-node="3"] [data-state="0"]');
     await rain.click();
     const evidence = await frame.locator("#evidence-bar").textContent();
@@ -117,8 +126,14 @@ try {
     await frame.locator('[data-soft-kind="likelihoods"]').click();
     await frame.locator("[data-soft-close]").last().click();
     await frame.locator("[data-soft-mode]").uncheck();
+    // Reset returns to the link's state: no evidence, observing, soft evidence off.
+    await frame.locator('[data-click-mode="intervene"]').click();
+    assert.equal(await reset.isDisabled(), false);
+    await reset.click();
+    assert.equal(await frame.locator(".ev-chip").count(), 0);
+    assert.equal(await frame.locator('[data-click-mode="observe"]').evaluate(el => el.classList.contains("on")), true);
+    assert.equal(await reset.isDisabled(), true);
     // Restore hard evidence after exercising both soft-evidence preferences.
-    await frame.locator('[data-clear-ev="all"]').click();
     await rain.click();
     // Safari blocks a popup opened after an await in a sandboxed frame: it must open during the click.
     await frame.evaluate(() => {

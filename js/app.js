@@ -84,6 +84,7 @@
     b.title = "Open this network, with the evidence set here, in the full editor in a new tab";
   }
   let viewerEvidenceChanged = false;
+  let initialState = null; // the viewer's state as the link opened it, for its Reset button
   if (viewer) {
     showProbs = true;
     document.body.classList.add("viewer");
@@ -891,6 +892,7 @@
   }
 
   function applyView() {
+    updateReset();
     viewport.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`);
     // The dot grid lives in the SVG, so it moves exactly with the nodes. Zoomed out, every 2nd
     // (4th, ...) dot is kept so the dots stay at least 14px apart instead of blurring together.
@@ -910,7 +912,7 @@
   // ------------------------------------------------------------ rendering
 
   function render() {
-    if (viewer) prepareLinks();
+    if (viewer) { prepareLinks(); updateReset(); }
     const parts = [];
     const widths = new Map(net.nodes.map((n) => [n.id, nodeSize(n)]));
     const inf = showProbs ? inference() : null;
@@ -1073,6 +1075,25 @@
     evidence = new Map();
     inferenceCache = null;
     saveEvidence();
+  }
+
+  const viewerState = () => JSON.stringify([[...evidence], clickMode, softMode, softKind]);
+  function updateReset() {
+    if (!viewer) return;
+    const b = document.querySelector('[data-action="reset-viewer"]');
+    b.disabled = !initialState || (fitted && softId === null && sheetId === null && viewerState() === initialState.key);
+  }
+  function resetViewer() {
+    if (!initialState) return;
+    hideSoftEditor();
+    openNodeSheet(null);
+    evidence = new Map(initialState.evidence);
+    [clickMode, softMode, softKind] = initialState.modes;
+    viewerChoices.clear();
+    viewerEvidenceChanged = false;
+    inferenceCache = null;
+    render();
+    fit();
   }
 
   function toggleProbs() {
@@ -1422,15 +1443,31 @@
     svg.setPointerCapture(e.pointerId);
   });
 
-  // Hovering a node that has a description shows it in a card under the node.
+  // A node's CPT as a small read-only table: one row per combination of parent states (at most
+  // TIP_ROWS of them), one column per state of the node.
+  const TIP_ROWS = 12;
+  function compactCpt(n) {
+    const { parents, rows } = M.cptRows(net, n.id);
+    const head = parents.map((p) => `<th class="par">${esc(p.name)}</th>`).join("") + n.labels.map((l, s) => `<th${s || !parents.length ? "" : ' class="first"'}>${esc(l)}</th>`).join("");
+    const body = rows.slice(0, TIP_ROWS).map((r) =>
+      "<tr>" + r.idx.map((s, k) => `<td class="par">${esc(parents[k].labels[s])}</td>`).join("") +
+      n.labels.map((_, s) => `<td${s || !parents.length ? "" : ' class="first"'}>${pctText(n.cpt[r.offset + s], n.cpt.slice(r.offset, r.offset + n.labels.length))}</td>`).join("") + "</tr>").join("");
+    const more = rows.length > TIP_ROWS ? `<p class="muted">…and ${rows.length - TIP_ROWS} more rows</p>` : "";
+    const gate = n.gate ? `<p class="muted">${n.gate.toUpperCase()} of its parents</p>` : "";
+    return gate + `<table class="tip-cpt"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>` + more;
+  }
+
+  // Hovering a node that has a description shows it in a card under the node. In the viewer,
+  // every node gets one, with its probability table.
   const nodeTip = $("#node-tip");
   let tipId = null;
   function showNodeTip(id) {
     const n = id === null ? null : M.getNode(net, id);
-    if (!n || !n.description || drag) { nodeTip.hidden = true; tipId = null; return; }
+    if (!n || !(n.description || viewer) || drag) { nodeTip.hidden = true; tipId = null; return; }
     if (tipId !== id) {
       const hint = showProbs ? clickHint() : "";
-      nodeTip.innerHTML = `<b>${esc(n.name)}</b><p>${esc(n.description)}</p>` + (M.badRows(n).length ? `<p class="warn">CPT rows do not sum to 1</p>` : "") + (hint ? `<p class="muted">${hint}</p>` : "");
+      nodeTip.classList.toggle("with-cpt", viewer);
+      nodeTip.innerHTML = `<b>${esc(n.name)}</b>` + (n.description ? `<p>${esc(n.description)}</p>` : "") + (viewer ? compactCpt(n) : "") + (M.badRows(n).length ? `<p class="warn">CPT rows do not sum to 1</p>` : "") + (hint ? `<p class="muted">${hint}</p>` : "");
       tipId = id;
     }
     nodeTip.hidden = false;
@@ -1741,7 +1778,8 @@
     document.body.classList.toggle("sheet-open", !nodeSheet.hidden);
     if (nodeSheet.hidden) { nodeSheet.innerHTML = ""; return; }
     nodeSheet.innerHTML = stateCard(n, inf, evidenceIndices(), `<b>${esc(n.name)}</b><button class="icon" data-sheet-close title="Close">✕</button>`,
-      n.description ? `<p class="sheet-desc">${esc(n.description)}</p>` : "");
+      n.description ? `<p class="sheet-desc">${esc(n.description)}</p>` : "") +
+      `<details class="sheet-cpt"><summary>Probability table</summary>${compactCpt(n)}</details>`;
   }
   nodeSheet.addEventListener("click", (e) => {
     if (e.target.closest("[data-sheet-close]")) { openNodeSheet(null); return; }
@@ -2610,6 +2648,7 @@
     "gist-copy-embed": () => openEmbed($("#gist-link").value.replace("?src=", "?view&src=")),
     "open-viewer": () => openLink(true),
     "open-editor": openEditor,
+    "reset-viewer": resetViewer,
     "gist-copy-viewer": async () => { await navigator.clipboard.writeText($("#gist-link").value.replace("?src=", "?view&src=")); toast("Copied the viewer link"); },
     gist: () => { toggleShareMenu(false); openGist(); },
     "gist-publish": () => publishGist(),
@@ -2794,6 +2833,10 @@
     Promise.all([loadFromLink(), loadFromHash()]).then((loaded) => {
       if (viewer && embedded && linked && !loaded.some(Boolean)) return fail();
       fallBack();
+      if (viewer) {
+        initialState = { key: viewerState(), evidence: new Map(evidence), modes: [clickMode, softMode, softKind] };
+        updateReset();
+      }
       document.body.classList.remove("viewer-loading");
       if (viewer) fit();
       // A frame's load event can precede the asynchronous import. Only replace an image after
