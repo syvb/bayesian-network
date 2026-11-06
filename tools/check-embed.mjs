@@ -50,6 +50,8 @@ try {
     await page.goto(base + "/article" + (source === "src" ? "?src" : ""));
     const frame = page.frames()[1];
     await frame.waitForFunction(() => document.querySelectorAll(".node").length === 4);
+    // no "Loading <url>…" message at the bottom of an embed
+    assert.equal(await frame.locator("#toast").textContent(), "");
     for (const key of ["localStorage", "sessionStorage"]) {
       assert.equal(await frame.evaluate(key => {
         try { window[key]; return false; } catch (e) { return e.name === "SecurityError"; }

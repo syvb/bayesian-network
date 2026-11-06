@@ -2479,7 +2479,7 @@
     if (!src) return;
     let url;
     try { url = new URL(rawUrl(src), location.href); } catch { toast("The link's src isn't a valid URL"); return; }
-    toast(`Loading ${url.href}…`);
+    if (!embedded) toast(`Loading ${url.href}…`);
     let res;
     try {
       res = await fetch(url);
