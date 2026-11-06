@@ -47,6 +47,10 @@ const server = createServer(async (req, res) => {
     res.setHeader("Content-Type", "text/html");
     // (Unsandboxed: Chromium gives an opaque-origin frame a cache of its own.)
     res.end(`<img src="${paste}" onerror="document.body.insertAdjacentHTML('beforeend', '<iframe src=&quot;/?view&amp;src=' + encodeURIComponent('${paste}') + '&quot; width=&quot;800&quot; height=&quot;600&quot;></iframe>')">`);
+  } else if (url.pathname === "/tall") {
+    // an embed partway down a long page
+    res.setHeader("Content-Type", "text/html");
+    res.end(`<meta name="viewport" content="width=device-width"><div style="height:300px"></div><iframe sandbox="allow-scripts allow-popups" src="/?view${url.searchParams.has("page-scroll") ? "&page-scroll" : ""}${hash}" width="100%" height="500"></iframe><div style="height:2000px"></div>`);
   } else if (url.pathname === "/missing.py") res.writeHead(404).end();
   else if (url.pathname === "/network.py") res.end(code);
   else {
@@ -102,6 +106,53 @@ try {
     assert.equal(await frame.locator("#load-error").count(), 0);
     await page.close();
     console.log("PASS cached copy without CORS headers: the viewer refetches it instead of failing");
+  }
+
+  for (const pageScroll of [false, true]) {
+    // Loading must not scroll the host page. With ?page-scroll, the wheel and one-finger drags
+    // scroll the page instead of the network; Ctrl+wheel (a trackpad pinch) and pinching still zoom.
+    const context = await browser.newContext({ viewport: { width: 400, height: 700 }, hasTouch: true });
+    const page = await context.newPage();
+    await page.goto(base + "/tall" + (pageScroll ? "?page-scroll" : ""));
+    const frame = page.frames()[1];
+    await frame.waitForFunction(() => document.querySelectorAll(".node").length === 4 && !document.body.classList.contains("viewer-loading"));
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => scrollY), 0);
+    const transform = () => frame.evaluate(() => document.querySelector("#viewport").getAttribute("transform"));
+    const t0 = await transform();
+    await page.mouse.move(200, 600);
+    await page.mouse.wheel(0, 100);
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => scrollY) > 0, pageScroll);
+    assert.equal(await transform() !== t0, !pageScroll);
+    await page.evaluate(() => scrollTo(0, 0));
+    await page.waitForTimeout(100);
+    const t1 = await transform();
+    await page.keyboard.down("Control");
+    await page.mouse.wheel(0, -100);
+    await page.keyboard.up("Control");
+    await page.waitForTimeout(200);
+    assert.notEqual(await transform(), t1);
+    assert.equal(await page.evaluate(() => scrollY), 0);
+    const cdp = await context.newCDPSession(page);
+    const touch = async (type, points) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
+    const t2 = await transform();
+    await touch("touchStart", [[200, 650]]);
+    for (let i = 1; i <= 10; i++) { await touch("touchMove", [[200, 650 - i * 20]]); await page.waitForTimeout(16); }
+    await touch("touchEnd", []);
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => scrollY) > 0, pageScroll);
+    assert.equal(await transform() !== t2, !pageScroll);
+    await page.evaluate(() => scrollTo(0, 0));
+    await page.waitForTimeout(100);
+    const t3 = await transform();
+    await touch("touchStart", [[180, 600], [220, 600]]);
+    for (let i = 1; i <= 10; i++) { await touch("touchMove", [[180 - i * 8, 600], [220 + i * 8, 600]]); await page.waitForTimeout(16); }
+    await touch("touchEnd", []);
+    await page.waitForTimeout(300);
+    assert.notEqual(await transform(), t3);
+    await context.close();
+    console.log(`PASS ${pageScroll ? "page-scroll" : "default"} embed on a long page: no jump on load; ${pageScroll ? "scrolling and dragging scroll the page" : "scrolling and dragging move the network"}; pinch zooms`);
   }
 
   for (const source of ["hash", "src"]) {
@@ -443,6 +494,10 @@ try {
     await article.close();
   }
   await editor.locator("#embed-theme").selectOption("");
+  await editor.locator("#embed-page-scroll").check();
+  assert.match(await editor.locator("#embed-code").inputValue(), /&amp;page-scroll/);
+  await editor.locator("#embed-page-scroll").uncheck();
+  assert.doesNotMatch(await editor.locator("#embed-code").inputValue(), /page-scroll/);
   console.log("PASS themes: reader's system by default (both images), or a fixed light or dark theme");
   await editor.locator("#embed-image-source").selectOption("url");
   assert.equal(await editor.locator("#embed-image-url").inputValue(), base + "/uploaded.svg?a=1&b=2");

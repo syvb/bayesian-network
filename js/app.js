@@ -26,6 +26,10 @@
   // ?theme=light or dark (set by embed code) fixes the colours; otherwise they follow the system.
   let forcedTheme = /^(light|dark)$/.exec(new URLSearchParams(location.search).get("theme") || "")?.[0];
   if (forcedTheme) document.documentElement.classList.add("theme-" + forcedTheme);
+  // ?page-scroll (an embed option): scrolling and one-finger drags scroll the page around the
+  // viewer instead of zooming or panning it. Pinch (or Ctrl+scroll) still zooms.
+  const pageScroll = viewer && new URLSearchParams(location.search).has("page-scroll");
+  if (pageScroll) document.documentElement.classList.add("page-scroll");
   // Viewers are independent of browser storage, including in opaque-origin sandboxed frames.
   // Settings a reader changes in the viewer are remembered here, and kept if they open the editor.
   const viewerChoices = new Set();
@@ -1502,6 +1506,7 @@
       fitted = false;
       applyView();
     } else if (drag.mode === "pan") {
+      if (pageScroll && drag.touch) return; // the browser scrolls the page instead
       const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
       if (!drag.moved && Math.hypot(dx, dy) < 3) return;
       drag.moved = true;
@@ -1541,6 +1546,7 @@
     drag = null;
     svg.classList.remove("panning");
     if (d.mode === "pinch") return; // the other finger lifting does nothing either
+    if (e.type === "pointercancel" && d.mode === "pan") return; // the browser took it, to scroll
     if (d.mode === "pan" && !d.moved && d.touch) openNodeSheet(d.node);
     else if (d.mode === "pan" && !d.moved && d.state) clickState(d.state.id, d.state.s);
     else if (d.mode === "pan" && !d.moved) select([]);
@@ -1571,6 +1577,7 @@
   });
 
   svg.addEventListener("wheel", (e) => {
+    if (pageScroll && !e.ctrlKey) return; // a trackpad pinch arrives as Ctrl+wheel
     e.preventDefault();
     const r = svg.getBoundingClientRect();
     const mx = e.clientX - r.left, my = e.clientY - r.top;
@@ -2177,6 +2184,9 @@
   function openImport() {
     importBefore = null;
     showImportResult(null);
+    // The viewer imports links without showing the dialog. Opening it would focus it, and in an
+    // embed that scrolls the host page to the frame.
+    if (viewer) return;
     $("#import-dialog").showModal();
     $("#import-code").focus();
   }
@@ -2408,9 +2418,11 @@
     }
     if (image) url.search += "&image-first";
     if (theme) url.search += "&theme=" + theme;
+    if ($("#embed-page-scroll").checked) url.search += "&page-scroll";
     $("#embed-code").value = valid ? embedCode(url.href, image, +$("#embed-height").value, theme) : "";
   }
   $("#embed-theme").addEventListener("change", updateEmbedCode);
+  $("#embed-page-scroll").addEventListener("change", updateEmbedCode);
   $("#embed-height").addEventListener("input", updateEmbedCode);
   $("#embed-image").addEventListener("change", updateEmbedCode);
   $("#embed-image-source").addEventListener("change", updateEmbedCode);

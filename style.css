@@ -155,6 +155,7 @@ main { flex: 1; display: flex; min-height: 0; }
   touch-action: none;
   background-color: var(--bg);
 }
+.page-scroll #canvas { touch-action: pan-x pan-y; }
 #grid { pointer-events: none; }
 .grid-dot { fill: var(--grid); }
 #canvas.panning { cursor: grabbing; }
