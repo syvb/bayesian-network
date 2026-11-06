@@ -31,6 +31,18 @@ const server = createServer(async (req, res) => {
     res.setHeader("Content-Type", "text/html");
     // default-size (300×150) frames, smaller than the viewer's padding
     res.end(`<iframe sandbox="allow-scripts allow-popups" src="/?view#net=damaged"></iframe><iframe sandbox="allow-scripts allow-popups" src="/?view&src=/missing.py"></iframe><iframe sandbox="allow-scripts allow-popups" src="/?view${hash}"></iframe>`);
+  } else if (url.pathname === "/paste.py") {
+    // Like api.pastes.dev: CORS headers only for requests with an Origin, yet publicly cacheable.
+    res.removeHeader("Access-Control-Allow-Origin");
+    if (req.headers.origin) { res.setHeader("Access-Control-Allow-Origin", req.headers.origin); res.setHeader("Vary", "Origin"); }
+    res.setHeader("Cache-Control", "public, max-age=604800, immutable");
+    res.end(code);
+  } else if (url.pathname === "/cached-image-first") {
+    // The article's <img> caches the file without CORS headers before the viewer fetches it.
+    const paste = `http://localhost:${server.address().port}/paste.py?${url.searchParams.get("n")}`;
+    res.setHeader("Content-Type", "text/html");
+    // (Unsandboxed: Chromium gives an opaque-origin frame a cache of its own.)
+    res.end(`<img src="${paste}" onerror="document.body.insertAdjacentHTML('beforeend', '<iframe src=&quot;/?view&amp;src=' + encodeURIComponent('${paste}') + '&quot; width=&quot;800&quot; height=&quot;600&quot;></iframe>')">`);
   } else if (url.pathname === "/missing.py") res.writeHead(404).end();
   else if (url.pathname === "/network.py") res.end(code);
   else {
@@ -61,6 +73,17 @@ try {
     if (process.env.CAPTURE_DIR) await page.screenshot({ path: `${process.env.CAPTURE_DIR}/embed-broken.png` });
     await page.close();
     console.log("PASS broken embed: damaged hash and failed download show only the reason; a default-size embed loads");
+  }
+
+  {
+    const page = await browser.newPage();
+    await page.goto(base + "/cached-image-first?n=" + Date.now());
+    await page.waitForSelector("iframe");
+    const frame = page.frames()[1];
+    await frame.waitForFunction(() => document.querySelectorAll(".node").length === 4 || document.querySelector("#load-error"));
+    assert.equal(await frame.locator("#load-error").count(), 0);
+    await page.close();
+    console.log("PASS cached copy without CORS headers: the viewer refetches it instead of failing");
   }
 
   for (const source of ["hash", "src"]) {

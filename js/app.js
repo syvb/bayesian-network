@@ -2485,7 +2485,10 @@
     if (!embedded) toast(`Loading ${url.href}…`);
     let res;
     try {
-      res = await fetch(url);
+      // Some hosts (pastes.dev) send CORS headers only to requests with an Origin, yet mark
+      // responses public and immutable: an embed's <img> can cache a copy without them, which
+      // fails the CORS check. Bypassing the cache once fetches (and caches) a proper copy.
+      res = await fetch(url).catch(() => fetch(url, { cache: "reload" }));
     } catch {
       toast("Couldn't download the linked network. The server may not allow cross-origin downloads (CORS).");
       return;
