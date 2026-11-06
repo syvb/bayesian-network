@@ -58,7 +58,21 @@ const base = `http://127.0.0.1:${server.address().port}`;
 let browser;
 
 try {
-  browser = await chromium.launch({ executablePath: process.env.CHROME_BIN });
+  // (Local network access checks would block the routed https page from framing this loopback server.)
+  browser = await chromium.launch({ executablePath: process.env.CHROME_BIN, args: ["--disable-features=LocalNetworkAccessChecks"] });
+  for (const site of ["https://www.lesswrong.com/posts/x", "https://example.com/post"]) {
+    // A LessWrong widget is a srcdoc frame sandboxed with only allow-scripts, so the viewer
+    // inside it can't open tabs and mustn't offer to; the same frame elsewhere still does.
+    const page = await browser.newPage();
+    await page.route(site, route => route.fulfill({ contentType: "text/html", body: `<iframe sandbox="allow-scripts" srcdoc="&lt;iframe src='${base}/?view${hash}'&gt;&lt;/iframe&gt;"></iframe>` }));
+    await page.goto(site);
+    await page.waitForFunction(() => document.querySelector("iframe").contentWindow.frames.length === 1);
+    const frame = page.frames().find(f => f.url().startsWith(base));
+    await frame.waitForFunction(() => document.querySelectorAll(".node").length === 4);
+    assert.equal(await frame.locator('[data-action="open-viewer"]').isVisible(), !site.includes("lesswrong"));
+    await page.close();
+  }
+  console.log("PASS LessWrong widget: no new-tab buttons there; other sites keep Full screen");
   {
     // An embed whose link can't be opened shows why, not the demo or any other network.
     const page = await browser.newPage();

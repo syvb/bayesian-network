@@ -82,6 +82,11 @@
     const b = document.querySelector('[data-action="open-editor"]');
     b.textContent = "Open in editor ↗";
     b.title = "Open this network, with the evidence set here, in the full editor in a new tab";
+    // LessWrong widgets are frames sandboxed without allow-popups, so nothing here can open a
+    // tab. A frame can't read its sandbox flags, but it can see which site embeds it.
+    if ([...(location.ancestorOrigins || [])].some((o) => /^https:\/\/([^/]+\.)?(lesswrong\.com|alignmentforum\.org)$/.test(o))) {
+      document.body.classList.add("no-popups");
+    }
   }
   let viewerEvidenceChanged = false;
   let initialState = null; // the viewer's state as the link opened it, for its Reset button

@@ -661,6 +661,7 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 body.viewer .viewer-only { display: revert; }
 body:not(.embedded) .embed-only { display: none; }
 body.no-storage [data-action="open-editor"] { display: none; }
+body.no-popups [data-action="open-viewer"], body.no-popups [data-action="open-editor"] { display: none; }
 body.viewer .toolbar > :not(.brand, .viewer-only, .grow, [data-action="fit"]) { display: none; }
 body.viewer #viewer-title { font-weight: 600; margin-right: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 body.viewer #side, body.viewer #cpt-dock { display: none; }
