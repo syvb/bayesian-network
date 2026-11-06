@@ -19,6 +19,10 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/image-article") {
     res.setHeader("Content-Type", "text/html");
     res.end(imageEmbed);
+  } else if (url.pathname === "/widget-image-article") {
+    // Like a LessWrong widget: the embed code in a srcdoc frame sandboxed with only allow-scripts.
+    res.setHeader("Content-Type", "text/html");
+    res.end(`<iframe sandbox="allow-scripts" width="800" height="700" srcdoc="${imageEmbed.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"></iframe>`);
   } else if (images.has(url.pathname)) {
     res.setHeader("Content-Type", url.pathname.endsWith(".svg") ? "image/svg+xml" : "image/png");
     res.end(images.get(url.pathname));
@@ -405,6 +409,19 @@ try {
     assert.deepEqual(imageRequests, []);
     await article.close();
     console.log(`PASS data URL: ${fail ? "app failure retains image" : reducedMotion ? "reduced motion skips fade" : "preview fades to hash viewer"}; no hosted image request, title and evidence retained`);
+  }
+  {
+    // Inside an opaque-origin sandbox the viewer's ready message comes from "null", and still reveals it.
+    const article = await context.newPage();
+    await article.goto(base.replace("127.0.0.1", "localhost") + "/widget-image-article");
+    const widget = article.frameLocator("iframe");
+    await widget.locator("iframe").waitFor({ state: "visible" });
+    assert.equal(await widget.locator("a").evaluate(link => link.inert), true);
+    const frame = article.frames().find(f => f.url().startsWith(base));
+    assert.equal(await frame.evaluate(() => window.origin), "null");
+    assert.match(await frame.locator("#evidence-bar").textContent(), /rain = yes/);
+    await article.close();
+    console.log("PASS data URL in a LessWrong-style widget: viewer replaces the image");
   }
   // Themes: by default the embed follows the reader's system (both images, light-dark background);
   // a chosen theme is fixed for every reader.

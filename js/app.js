@@ -2345,7 +2345,9 @@
   <script>
     (function () {
       var box = document.currentScript.parentElement, frame = box.querySelector('iframe');
-      var origin = new URL(frame.dataset.src).origin;
+      // A sandboxed page without allow-same-origin (a LessWrong widget) passes its sandbox to
+      // the frame, whose messages then come from the opaque origin "null".
+      var origin = window.origin === 'null' ? 'null' : new URL(frame.dataset.src).origin;
       function ready(event) {
         if (event.source !== frame.contentWindow || event.origin !== origin || event.data !== 'bn-viewer-ready') return;
         box.querySelector('a').inert = true;
