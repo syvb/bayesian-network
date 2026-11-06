@@ -794,7 +794,9 @@
   }
 
   let toastTimer;
+  let lastToast = "";
   function toast(msg) {
+    lastToast = msg;
     const t = $("#toast");
     t.textContent = msg;
     t.classList.add("show");
@@ -882,7 +884,8 @@
     const top = evidenceBar.hidden ? 0 : evidenceBar.getBoundingClientRect().bottom - r.top - pad / 2;
     // on narrow screens the watch panel goes along the bottom, so leave room for it too
     const bottom = !watchPanel.hidden && watchPanel.offsetWidth > r.width / 2 ? watchPanel.offsetHeight + 8 : 0;
-    const k = Math.min(1.4, (r.width - 2 * pad) / (x1 - x0), (r.height - 2 * pad - top - bottom) / (y1 - y0));
+    // A frame smaller than the padding (say a default 300×150 iframe) still gets a positive zoom.
+    const k = Math.max(0.05, Math.min(1.4, (r.width - 2 * pad) / (x1 - x0), (r.height - 2 * pad - top - bottom) / (y1 - y0)));
     view = { k, x: r.width / 2 - ((x0 + x1) / 2) * k, y: (r.height + top - bottom) / 2 - ((y0 + y1) / 2) * k };
     applyView();
   }
@@ -2771,11 +2774,22 @@
     // startup network, whose owner may be keeping unsaved changes in memory.
     // A startup link that couldn't be opened (unreachable, damaged) leaves no network: open the
     // one this tab would have started with.
+    // An embed whose link couldn't be opened shows only why, never some other network.
+    const linked = document.body.classList.contains("viewer-loading");
+    const fail = () => {
+      const error = document.createElement("p");
+      error.id = "load-error";
+      error.setAttribute("role", "alert");
+      error.textContent = /linked network|link's/i.test(lastToast) ? lastToast : "Couldn't open the linked network.";
+      document.body.replaceChildren(error);
+      document.body.classList.remove("viewer-loading");
+    };
     const fallBack = () => {
       if (viewer || netId) return;
       navigate(async () => { await reloadNetworks(); const id = rememberedNetwork(); return id ? enterNetwork(id) : nextNetwork(); });
     };
     Promise.all([loadFromLink(), loadFromHash()]).then((loaded) => {
+      if (viewer && embedded && linked && !loaded.some(Boolean)) return fail();
       fallBack();
       document.body.classList.remove("viewer-loading");
       if (viewer) fit();
@@ -2793,6 +2807,7 @@
         if (fade) requestAnimationFrame(() => fade.play());
       }
     }).catch(() => {
+      if (viewer && embedded && linked) return fail();
       fallBack();
       document.body.classList.remove("viewer-loading");
       toast("Couldn't open the linked network");

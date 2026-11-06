@@ -667,6 +667,7 @@ body.viewer #side, body.viewer #cpt-dock { display: none; }
 body.viewer .node .port { display: none; }
 body.viewer .node { cursor: default; }
 body.viewer-loading #canvas-wrap { visibility: hidden; }
+#load-error { margin: 0; padding: 24px; min-height: 100vh; box-sizing: border-box; display: grid; place-items: center; text-align: center; color: var(--muted); font-size: 14px; }
 
 /* Hover card with a node's description */
 #node-tip { position: absolute; z-index: 5; max-width: 320px; padding: 8px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 6px 22px rgb(0 0 0 / 0.16); font-size: 13px; pointer-events: none; }

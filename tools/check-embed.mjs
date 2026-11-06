@@ -27,7 +27,12 @@ const server = createServer(async (req, res) => {
     res.setHeader("Content-Type", "text/html");
     const sandbox = "allow-scripts allow-popups" + (url.searchParams.has("escape") ? " allow-popups-to-escape-sandbox" : "");
     res.end(`<iframe id="network" sandbox="${sandbox}" src="/${src}" width="800" height="600"></iframe>`);
-  } else if (url.pathname === "/network.py") res.end(code);
+  } else if (url.pathname === "/broken") {
+    res.setHeader("Content-Type", "text/html");
+    // default-size (300×150) frames, smaller than the viewer's padding
+    res.end(`<iframe sandbox="allow-scripts allow-popups" src="/?view#net=damaged"></iframe><iframe sandbox="allow-scripts allow-popups" src="/?view&src=/missing.py"></iframe><iframe sandbox="allow-scripts allow-popups" src="/?view${hash}"></iframe>`);
+  } else if (url.pathname === "/missing.py") res.writeHead(404).end();
+  else if (url.pathname === "/network.py") res.end(code);
   else {
     try {
       const path = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
@@ -42,6 +47,22 @@ let browser;
 
 try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_BIN });
+  {
+    // An embed whose link can't be opened shows why, not the demo or any other network.
+    const page = await browser.newPage();
+    await page.goto(base + "/broken");
+    for (const [i, reason] of [[1, /damaged/], [2, /HTTP 404/]]) {
+      const frame = page.frames()[i];
+      await frame.waitForSelector("#load-error");
+      assert.match(await frame.locator("#load-error").textContent(), reason);
+      assert.equal(await frame.locator("svg, .node").count(), 0);
+    }
+    await page.frames()[3].waitForFunction(() => document.querySelectorAll(".node").length === 4);
+    if (process.env.CAPTURE_DIR) await page.screenshot({ path: `${process.env.CAPTURE_DIR}/embed-broken.png` });
+    await page.close();
+    console.log("PASS broken embed: damaged hash and failed download show only the reason; a default-size embed loads");
+  }
+
   for (const source of ["hash", "src"]) {
     const context = await browser.newContext();
     const errors = [];
