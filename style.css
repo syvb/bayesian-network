@@ -637,7 +637,7 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 .menu .net-row b { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu .net-delete { width: 30px; flex: none; align-items: center; justify-content: center; color: var(--muted); }
 .menu .net-delete:hover, .menu .net-delete:focus { color: var(--danger); }
-.narrow-icon { display: none; }
+.narrow-icon, .phone-icon { display: none; }
 @media (max-width: 1130px) {
   .toolbar .net-switch { max-width: 86px; }
   .toolbar .narrow-icon { display: inline; font-size: 15px; line-height: 1; }
@@ -755,6 +755,11 @@ button.small.on { color: var(--accent); border-color: var(--accent); }
   #evidence-bar { left: 6px; top: 6px; max-width: calc(100% - 12px); font-size: 12px; padding: 4px 8px; }
   #evidence-bar .ev-hint { flex-basis: 100%; min-width: 0; }
   #evidence-bar .ev-hint + .sep { display: none; }
+  /* the bar wraps here, which would leave the divider dangling at the end of a line */
+  #evidence-bar .sep { display: none; }
+  /* room for the network's name: shorter labels for Full screen and Open in editor */
+  body.viewer .toolbar .phone-hide { display: none; }
+  body.viewer .toolbar .phone-icon { display: inline; }
   /* the watch panel goes along the bottom, out of the network's way */
   #watch-panel { top: auto; bottom: 6px; left: 6px; right: 6px; width: auto; max-height: 34%; }
   body.sheet-open #watch-panel { display: none; }

@@ -84,7 +84,7 @@
   if (embedded) {
     document.body.classList.add("embedded");
     const b = document.querySelector('[data-action="open-editor"]');
-    b.textContent = "Open in editor ↗";
+    for (const s of b.children) s.textContent += " ↗";
     b.title = "Open this network, with the evidence set here, in the full editor in a new tab";
     // LessWrong widgets are frames sandboxed without allow-popups, so nothing here can open a
     // tab. A frame can't read its sandbox flags, but it can see which site embeds it.
@@ -1789,10 +1789,22 @@
     nodeSheet.hidden = !n || !inf || !viewer;
     document.body.classList.toggle("sheet-open", !nodeSheet.hidden);
     if (nodeSheet.hidden) { nodeSheet.innerHTML = ""; return; }
+    // the table stays open while you set evidence on the same node
+    const open = nodeSheet.dataset.node === String(n.id) && nodeSheet.querySelector(".sheet-cpt")?.open;
+    nodeSheet.dataset.node = n.id;
     nodeSheet.innerHTML = stateCard(n, inf, evidenceIndices(), `<b>${esc(n.name)}</b><button class="icon" data-sheet-close title="Close">✕</button>`,
       n.description ? `<p class="sheet-desc">${esc(n.description)}</p>` : "") +
-      `<details class="sheet-cpt"><summary>Probability table</summary>${compactCpt(n)}</details>`;
+      `<details class="sheet-cpt"${open ? " open" : ""}><summary>Probability table</summary>${compactCpt(n)}</details>`;
+    fitSheet();
   }
+  // The card scrolls only when its content really doesn't fit. Otherwise a pixel or two of
+  // rounding would make it a scroll area, and on iOS a drag over it would then never scroll the
+  // page around the embed.
+  function fitSheet() {
+    nodeSheet.style.overflowY = "";
+    nodeSheet.style.overflowY = nodeSheet.scrollHeight > nodeSheet.clientHeight + 4 ? "" : "hidden";
+  }
+  nodeSheet.addEventListener("toggle", fitSheet, true);
   nodeSheet.addEventListener("click", (e) => {
     if (e.target.closest("[data-sheet-close]")) { openNodeSheet(null); return; }
     const row = e.target.closest("[data-watch-state]");
@@ -2343,7 +2355,8 @@
   function embedCode(url, image, height, theme) {
     const attr = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
     const color = (name) => (theme ? themeColor(theme, name) : `light-dark(${themeColor("light", name)}, ${themeColor("dark", name)})`);
-    const frame = `color-scheme: ${theme || "light dark"}; border: 1px solid ${color("--border")}; border-radius: 8px;`;
+    // On a phone the chosen height can be taller than the screen; keep the whole viewer in view.
+    const frame = `color-scheme: ${theme || "light dark"}; border: 1px solid ${color("--border")}; border-radius: 8px; max-height: 85svh;`;
     const title = attr(net.name || "Bayesian network");
     const imgStyle = "display: block; width: 100%; height: 100%; object-fit: contain;";
     const img = typeof image === "object" && image

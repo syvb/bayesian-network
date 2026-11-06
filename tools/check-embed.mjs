@@ -151,6 +151,21 @@ try {
     await touch("touchEnd", []);
     await page.waitForTimeout(300);
     assert.notEqual(await transform(), t3);
+    if (pageScroll) {
+      // An open node card that fits mustn't become a scroll area that swallows the page's drag.
+      await page.evaluate(() => scrollTo(0, 0));
+      await frame.locator('[data-action="fit"]').click();
+      const name = await frame.locator('.node[data-node="3"] text.name').boundingBox();
+      await page.touchscreen.tap(name.x + name.width / 2, name.y + name.height / 2);
+      await frame.locator("#node-sheet summary").click();
+      const card = await frame.locator("#node-sheet").boundingBox();
+      const x = card.x + card.width / 2, y = card.y + card.height / 2;
+      await touch("touchStart", [[x, y]]);
+      for (let i = 1; i <= 10; i++) { await touch("touchMove", [[x, y - i * 15]]); await page.waitForTimeout(16); }
+      await touch("touchEnd", []);
+      await page.waitForTimeout(300);
+      assert.ok(await page.evaluate(() => scrollY) > 0);
+    }
     await context.close();
     console.log(`PASS ${pageScroll ? "page-scroll" : "default"} embed on a long page: no jump on load; ${pageScroll ? "scrolling and dragging scroll the page" : "scrolling and dragging move the network"}; pinch zooms`);
   }
@@ -494,6 +509,8 @@ try {
     await article.close();
   }
   await editor.locator("#embed-theme").selectOption("");
+  // never taller than the reader's screen (with the browser's toolbars showing)
+  assert.match(await editor.locator("#embed-code").inputValue(), /max-height: 85svh/);
   await editor.locator("#embed-page-scroll").check();
   assert.match(await editor.locator("#embed-code").inputValue(), /&amp;page-scroll/);
   await editor.locator("#embed-page-scroll").uncheck();
