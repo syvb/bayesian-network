@@ -68,6 +68,31 @@ let browser;
 try {
   // (Local network access checks would block the routed https page from framing this loopback server.)
   browser = await chromium.launch({ executablePath: process.env.CHROME_BIN, args: ["--disable-features=LocalNetworkAccessChecks"] });
+  {
+    // Layout comments are untrusted even when the Python itself is safe. Both link formats
+    // must preserve numeric positions but never turn a coordinate into SVG markup.
+    const positions = { cloudy: [-130.5, 0], sprinkler: [0, 180.25], rain: [250, 180], "wet grass": [80, 340] };
+    const injection = '0,0)"><svg onload="window.layoutExecuted=true"></svg><g transform="translate(0';
+    for (const axis of [null, 0, 1]) for (const hosted of [false, true]) for (const viewer of [false, true]) {
+      const layout = structuredClone(positions);
+      if (axis !== null) layout.cloudy[axis] = injection;
+      const source = code.replace(/^# bn-editor-layout:.*$/m, "# bn-editor-layout: " + JSON.stringify(layout));
+      const page = await browser.newPage();
+      await page.route(base + "/layout.py", route => route.fulfill({ contentType: "text/plain", body: source }));
+      const link = hosted ? "&src=/layout.py" : "#net=" + deflateRawSync(source).toString("base64url");
+      await page.goto(base + "/?" + (viewer ? "view" : "") + link);
+      await page.waitForFunction(() => globalThis.bnEditor?.net.nodes.length === 4 && document.querySelectorAll(".node").length === 4);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await page.evaluate(() => window.layoutExecuted === true), false, "untrusted layout executed JavaScript");
+      assert.equal(await page.locator("#viewport [onload]").count(), 0);
+      const actual = await page.evaluate(() => Object.fromEntries(bnEditor.net.nodes.map(n => [n.name, [n.x, n.y]])));
+      assert.deepEqual(Object.keys(actual).sort(), Object.keys(positions).sort());
+      assert.ok(Object.values(actual).every(pair => pair.length === 2 && pair.every(Number.isFinite)));
+      if (axis === null) assert.deepEqual(actual, positions);
+      await page.close();
+    }
+    console.log("PASS network links: numeric layout preserved; injected x/y coordinates cannot execute in editor or viewer (hash and hosted file)");
+  }
   for (const site of ["https://www.lesswrong.com/posts/x", "https://example.com/post"]) {
     // A LessWrong widget is a srcdoc frame sandboxed with only allow-scripts, so the viewer
     // inside it can't open tabs and mustn't offer to; the same frame elsewhere still does.

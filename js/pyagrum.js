@@ -833,7 +833,11 @@
     if (unfilled.length) return failed(`The CPT${unfilled.length > 1 ? "s" : ""} of ${nameList(unfilled.map((n) => n.name))} ${unfilled.length > 1 ? "are" : "is"} never filled (all 0). Fill ${unfilled.length > 1 ? "them" : "it"} in the script, for example with bn.cpt(name).fillWith([...]).`);
     const bad = net.nodes.map((n) => [n, M.badRows(n).length]).filter(([, k]) => k);
     if (bad.length) return failed(`Some CPT rows don't add up to 1: ${nameList(bad.map(([n, k]) => `${n.name} (${k} of ${n.cpt.length / n.labels.length} rows)`))}. Normalize them in the script, for example with bn.cpt(name).normalizeAsCPT().`);
-    if (layout && net.nodes.every((n) => Array.isArray(layout[n.name]))) {
+    // Coordinates enter SVG attributes: never accept strings or other values from metadata.
+    if (layout && net.nodes.every((n) => {
+      const pos = layout[n.name];
+      return Array.isArray(pos) && pos.length === 2 && pos.every(Number.isFinite);
+    })) {
       for (const n of net.nodes) [n.x, n.y] = layout[n.name];
     } else M.autoLayout(net);
     if (Array.isArray(watch)) {
