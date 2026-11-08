@@ -288,6 +288,29 @@ try {
   await editor.goto(base + "/?view" + hash);
   await editor.waitForFunction(() => document.querySelectorAll(".node").length === 4 && !document.body.classList.contains("viewer-loading"));
   await editor.locator('[data-action="open-editor"]').click();
+  for (const id of ["export-dialog", "import-dialog", "embed-dialog", "gist-dialog"]) {
+    const dialog = editor.locator("#" + id);
+    await dialog.evaluate(el => el.showModal());
+    await dialog.locator("h2").click();
+    assert.equal(await dialog.isVisible(), true, `${id}: content click stays open`);
+    const box = await dialog.boundingBox();
+    await editor.mouse.click(box.x + 5, box.y + 5);
+    assert.equal(await dialog.isVisible(), true, `${id}: padding click stays open`);
+    const field = dialog.locator("textarea, p").first();
+    await field.click();
+    assert.equal(await dialog.isVisible(), true, `${id}: field or text click stays open`);
+    await editor.mouse.move(box.x + 5, box.y + 5);
+    await editor.mouse.down();
+    await editor.mouse.move(5, 5);
+    await editor.mouse.up();
+    assert.equal(await dialog.isVisible(), true, `${id}: drag out stays open`);
+    await editor.mouse.click(5, 5);
+    assert.equal(await dialog.isVisible(), false, `${id}: backdrop click closes`);
+    await dialog.evaluate(el => el.showModal());
+    await editor.keyboard.press("Escape");
+    assert.equal(await dialog.isVisible(), false, `${id}: Escape still closes`);
+  }
+  console.log("PASS all four dialogs: inside clicks and drags stay open; backdrop clicks and Escape close");
   await editor.locator('[data-action="share"]').click();
   assert.equal(await editor.locator('#share-menu [data-action*="embed"]').count(), 1);
   await editor.locator('[data-action="copy-embed"]').click();

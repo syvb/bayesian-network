@@ -2183,6 +2183,20 @@
     else download(await BNImage.svgToPng(image, code), fileName(".png"));
   }
 
+  // Backdrop events target the dialog too, so distinguish them from its padding by position.
+  for (const dialog of document.querySelectorAll("dialog")) {
+    let startedOutside = false;
+    const outside = (e) => {
+      const r = dialog.getBoundingClientRect();
+      return e.target === dialog && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom);
+    };
+    dialog.addEventListener("pointerdown", (e) => { startedOutside = outside(e); });
+    dialog.addEventListener("click", (e) => {
+      if (startedOutside && outside(e)) dialog.close();
+      startedOutside = false;
+    });
+  }
+
   function openExport() {
     $("#export-code").value = exportCode();
     $("#export-warnings").textContent = exportWarnings();
