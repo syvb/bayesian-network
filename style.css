@@ -366,6 +366,13 @@ table.cpt-grid { border-collapse: separate; border-spacing: 0; margin: 0; max-wi
 .cpt-grid th.bar-h .muted { display: block; font-weight: normal; font-size: 12px; }
 .cpt-grid th.state { text-align: right; min-width: 84px; cursor: pointer; }
 .cpt-grid th.state:hover, .cpt-grid th.bar-h:hover { color: var(--accent); }
+/* − / + on the selected column (see nudge in cpt.js); hidden elsewhere but still taking its space. */
+.cpt-grid th.state .nudge { display: flex; justify-content: flex-end; margin-bottom: 3px; visibility: hidden; }
+.cpt-grid th.state.nudging .nudge { visibility: visible; }
+.cpt-grid th.state .nudge button { width: 22px; padding: 0; line-height: 16px; font-weight: 600; color: var(--accent); border-color: var(--accent); background: var(--surface); border-radius: 0; }
+.cpt-grid th.state .nudge button:first-child { border-radius: 5px 0 0 5px; }
+.cpt-grid th.state .nudge button:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
+.cpt-grid th.state .nudge button:hover { background: var(--accent); color: var(--surface); }
 .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
 .cpt-grid td.pcell { border-right: 1px solid var(--border); cursor: pointer; vertical-align: top; padding-top: 6px; }
 .cpt-grid td.pcell:hover { background: var(--accent-soft); }
@@ -431,6 +438,7 @@ input.cell-edit {
   opacity: 0.85;
 }
 .bar .handle:hover::after { background: var(--accent); opacity: 1; }
+.cpt-grid td.median { color: var(--muted); }
 
 .menu-anchor { position: relative; }
 .menu {
