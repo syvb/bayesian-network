@@ -1464,18 +1464,68 @@
     svg.setPointerCapture(e.pointerId);
   });
 
-  // A node's CPT as a small read-only table: one row per combination of parent states (at most
-  // TIP_ROWS of them), one column per state of the node.
+  // A node's CPT as a small read-only table: one row per combination of parent states, with a bar.
+  // A two-state node's bar is its true state's probability (the other state has the rest); any
+  // other node's bar has a segment per state, in the CPT editor's colours. A parent's state shows
+  // once per group of rows, and a group whose rows are all equal is one row, "any" for the other
+  // parents. Rows that observed or intervened parents rule out fade, and when there are more than
+  // TIP_ROWS rows, only those that match are listed.
   const TIP_ROWS = 12;
   function compactCpt(n) {
     const { parents, rows } = M.cptRows(net, n.id);
-    const head = parents.map((p) => `<th class="par">${esc(p.name)}</th>`).join("") + n.labels.map((l, s) => `<th${s || !parents.length ? "" : ' class="first"'}>${esc(l)}</th>`).join("");
-    const body = rows.slice(0, TIP_ROWS).map((r) =>
-      "<tr>" + r.idx.map((s, k) => `<td class="par">${esc(parents[k].labels[s])}</td>`).join("") +
-      n.labels.map((_, s) => `<td${s || !parents.length ? "" : ' class="first"'}>${pctText(n.cpt[r.offset + s], n.cpt.slice(r.offset, r.offset + n.labels.length))}</td>`).join("") + "</tr>").join("");
-    const more = rows.length > TIP_ROWS ? `<p class="muted">…and ${rows.length - TIP_ROWS} more rows</p>` : "";
+    const k = n.labels.length, t = M.trueState(n.labels), colors = BNCptEditor.stateColors(n.labels);
+    const list = [];
+    for (let i = 0, j; i < rows.length; i = j) {
+      for (j = i + 1; parents.length > 1 && j < rows.length && rows[j].idx[0] === rows[i].idx[0];) j++;
+      const group = rows.slice(i, j).map((r) => ({ idx: r.idx, v: n.cpt.slice(r.offset, r.offset + k) }));
+      const same = group.length > 1 && group.every((r) => r.v.every((p, s) => p === group[0].v[s]));
+      list.push(...(same ? [{ idx: group[0].idx.map((s, q) => (q ? null : s)), v: group[0].v }] : group));
+    }
+    const ev = evidenceIndices();
+    const known = parents.map((p) => {
+      const v = ev.get(p.id);
+      return typeof v === "number" ? { s: v, kind: "observed" } : isDo(v) ? { s: v.do, kind: "intervened" } : null;
+    });
+    const fits = (r) => known.every((e, q) => !e || r.idx[q] === null || r.idx[q] === e.s);
+    const anyKnown = known.some(Boolean);
+    const matching = anyKnown && list.length > TIP_ROWS ? list.filter(fits) : list;
+    const shown = matching.slice(0, TIP_ROWS);
+
+    // A segment's label is shortened to fit by fitCptTables, so it keeps the short one in data-short.
+    const bar = (v, faded) => k === 2
+      ? `<span class="tip-bar"><span class="track"><span class="fill" style="width:${v[t] * 100}%"></span></span><span class="num">${pctText(v[t], v)}</span></span>`
+      : `<span class="tip-bar"><span class="stack">${v.map((p, s) => !(p > 0) ? "" : `<span class="seg" style="width:${p * 100}%;background:${colors[s][0]};color:${colors[s][1]}"` +
+          (faded ? "></span>" : ` data-short="${esc(pctText(p, v))}"><span>${esc(n.labels[s])}${p === 1 ? "" : " · " + esc(pctText(p, v))}</span></span>`)).join("")}</span></span>`;
+    const body = shown.map((r, i) => {
+      const fresh = !i || shown[i - 1].idx[0] !== r.idx[0];
+      const cls = [parents.length > 1 && fresh && i && "group", anyKnown && (fits(r) ? "on" : "off")].filter(Boolean).join(" ");
+      const cells = r.idx.map((s, q) => q === 0 && !fresh ? `<td class="par"></td>`
+        : s === null ? `<td class="par any">any</td>`
+        : `<td class="par${known[q] && known[q].s === s ? " " + known[q].kind : ""}">${esc(parents[q].labels[s])}</td>`).join("");
+      return `<tr${cls ? ` class="${cls}"` : ""}>${cells}<td class="bar-cell">${bar(r.v, anyKnown && !fits(r))}</td></tr>`;
+    }).join("");
+    const head = parents.length || k === 2 ? `<thead><tr>${parents.map((p) => `<th class="par">${esc(p.name)}</th>`).join("")}<th>${k === 2 ? `P(${esc(n.labels[t])})` : ""}</th></tr></thead>` : "";
+    const legend = k === 2 ? "" : `<div class="tip-legend">${n.labels.map((l, s) => `<span><i style="background:${colors[s][0]}"></i>${esc(l)}</span>`).join("")}</div>`;
+    const hidden = list.length - shown.length;
+    const more = !hidden ? "" : shown.length === matching.length ? `<p class="muted">…and ${hidden} rows that don't match the evidence</p>` : `<p class="muted">…and ${hidden} more rows</p>`;
     const gate = n.gate ? `<p class="muted">${n.gate.toUpperCase()} of its parents</p>` : "";
-    return gate + `<table class="tip-cpt"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>` + more;
+    // with only interventions on its parents, matching rows take the intervention colour
+    const tint = anyKnown && known.every((e) => !e || e.kind === "intervened") ? " do" : "";
+    return gate + legend + `<table class="tip-cpt${tint}">${head}<tbody>${body}</tbody></table>` + more;
+  }
+  // Fits the probability tables in `root` to their card, once they're laid out: parents' names
+  // and states wrap only when the table is too wide for them on one line, and a stacked bar's
+  // segment shows "state · 25%", or where that doesn't fit "25%", or else nothing.
+  function fitCptTables(root) {
+    for (const table of root.querySelectorAll(".tip-cpt")) {
+      table.classList.remove("wrap");
+      if (table.offsetWidth > table.parentNode.clientWidth) table.classList.add("wrap");
+    }
+    for (const seg of root.querySelectorAll(".tip-bar .seg[data-short]")) {
+      const label = seg.firstChild, room = seg.getBoundingClientRect().width;
+      if (label.getBoundingClientRect().width > room) label.textContent = seg.dataset.short;
+      if (label.getBoundingClientRect().width > room) label.textContent = "";
+    }
   }
 
   // Hovering a node that has a description shows it in a card under the node. In the viewer,
@@ -1485,13 +1535,14 @@
   function showNodeTip(id) {
     const n = id === null ? null : M.getNode(net, id);
     if (!n || !(n.description || viewer) || drag) { nodeTip.hidden = true; tipId = null; return; }
+    nodeTip.hidden = false;
     if (tipId !== id) {
       const hint = showProbs ? clickHint() : "";
       nodeTip.classList.toggle("with-cpt", viewer);
       nodeTip.innerHTML = `<b>${esc(n.name)}</b>` + (n.description ? `<p>${esc(n.description)}</p>` : "") + (viewer ? compactCpt(n) : "") + (M.badRows(n).length ? `<p class="warn">CPT rows do not sum to 1</p>` : "") + (hint ? `<p class="muted">${hint}</p>` : "");
+      fitCptTables(nodeTip);
       tipId = id;
     }
-    nodeTip.hidden = false;
     const { h } = nodeSize(n), wrapW = svg.clientWidth, tw = nodeTip.offsetWidth, th = nodeTip.offsetHeight;
     const cx = view.x + n.x * view.k;
     let top = view.y + (n.y + h / 2) * view.k + 8;
@@ -1807,6 +1858,7 @@
     nodeSheet.innerHTML = stateCard(n, inf, evidenceIndices(), `<b>${esc(n.name)}</b><button class="icon" data-sheet-close title="Close">✕</button>`,
       n.description ? `<p class="sheet-desc">${esc(n.description)}</p>` : "") +
       `<details class="sheet-cpt"${open ? " open" : ""}><summary>Probability table</summary>${compactCpt(n)}</details>`;
+    fitCptTables(nodeSheet);
     fitSheet();
   }
   // The card scrolls only when its content really doesn't fit. Otherwise a pixel or two of
@@ -1816,7 +1868,7 @@
     nodeSheet.style.overflowY = "";
     nodeSheet.style.overflowY = nodeSheet.scrollHeight > nodeSheet.clientHeight + 4 ? "" : "hidden";
   }
-  nodeSheet.addEventListener("toggle", fitSheet, true);
+  nodeSheet.addEventListener("toggle", () => { fitCptTables(nodeSheet); fitSheet(); }, true);
   nodeSheet.addEventListener("click", (e) => {
     if (e.target.closest("[data-sheet-close]")) { openNodeSheet(null); return; }
     const row = e.target.closest("[data-watch-state]");

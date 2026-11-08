@@ -1068,5 +1068,5 @@
     };
   }
 
-  globalThis.BNCptEditor = { createCptEditor, parseProb };
+  globalThis.BNCptEditor = { createCptEditor, parseProb, stateColors };
 })();

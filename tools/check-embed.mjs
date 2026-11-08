@@ -260,12 +260,12 @@ try {
     assert.equal(await frame.locator('[data-action="open-viewer"]').isVisible(), true);
     // Until the reader sets evidence, a ?src= embed's Full screen links to its file (after, to a #net= link).
     if (source === "src") await frame.waitForFunction(href => document.querySelector('[data-action="open-viewer"]').href === href, `${base}/?view&src=%2Fnetwork.py`);
-    // Hovering a node shows its probability table; Reset is off until something changes.
+    // Hovering a node shows its probability table, a row per combination of its parents' states
+    // with P(yes) for a yes/no node; Reset is off until something changes.
     const wet = await frame.locator('.node[data-node="4"] text.name').boundingBox();
     await page.mouse.move(wet.x + wet.width / 2, wet.y + wet.height / 2, { steps: 4 });
     await frame.locator("#node-tip .tip-cpt").waitFor();
-    assert.equal(await frame.locator("#node-tip .tip-cpt tbody tr").count(), 4);
-    assert.match(await frame.locator("#node-tip .tip-cpt tbody tr").first().textContent(), /onyes99\.0%1\.0%/);
+    assert.deepEqual(await frame.locator("#node-tip .tip-cpt tbody tr").allTextContents(), ["onyes99.0%", "no90.0%", "offyes90.0%", "no0%"]);
     await page.mouse.move(2, 2);
     const reset = frame.locator('[data-action="reset-viewer"]');
     assert.equal(await reset.isDisabled(), true);
@@ -274,6 +274,11 @@ try {
     const evidence = await frame.locator("#evidence-bar").textContent();
     assert.match(evidence, /rain = yes/);
     assert.equal(await frame.locator('.node[data-node="1"] [data-state="0"] .pct').textContent(), "80.0%");
+    // With rain observed, the table marks the rows for rain = yes.
+    await page.mouse.move(wet.x + wet.width / 2, wet.y + wet.height / 2, { steps: 4 });
+    await frame.locator("#node-tip .tip-cpt").waitFor();
+    assert.deepEqual(await frame.locator("#node-tip .tip-cpt tr.on").allTextContents(), ["onyes99.0%", "offyes90.0%"]);
+    await page.mouse.move(2, 2);
     await frame.locator('[data-click-mode="intervene"]').click();
     await frame.locator('[data-click-mode="observe"]').click();
     await frame.locator("[data-soft-mode]").check();

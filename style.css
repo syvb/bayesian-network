@@ -686,13 +686,36 @@ body.viewer-loading #canvas-wrap { visibility: hidden; }
 #node-tip[hidden] { display: none; }
 #node-tip p { margin: 4px 0 0; white-space: pre-wrap; line-height: 1.4; }
 #node-tip p.muted { font-size: 11px; }
-#node-tip.with-cpt { max-width: min(480px, calc(100% - 8px)); }
-.tip-cpt { border-collapse: collapse; margin-top: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
-.tip-cpt th, .tip-cpt td { padding: 2px 6px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
-.tip-cpt th { font-weight: 600; }
-.tip-cpt .par { text-align: left; color: var(--muted); }
-.tip-cpt .first { border-left: 1px solid var(--border); }
-.tip-cpt tbody tr:last-child td { border-bottom: none; }
+/* one width for every node in the viewer, so the card doesn't jump in size from node to node */
+#node-tip.with-cpt { width: min(420px, calc(100% - 8px)); max-width: none; }
+/* The viewer's probability tables: a bar per row (js/app.js, compactCpt) */
+.tip-cpt { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+/* parents' names and states wrap only when there are too many parents for the width (fitCptTables) */
+.tip-cpt th, .tip-cpt td { padding: 2px 6px; text-align: left; white-space: nowrap; }
+.tip-cpt.wrap th, .tip-cpt.wrap td { white-space: normal; overflow-wrap: anywhere; }
+.tip-cpt.wrap td.bar-cell { width: auto; }
+.tip-cpt th { font-weight: 600; vertical-align: bottom; }
+.tip-cpt .par { color: var(--muted); }
+.tip-cpt .any { font-style: italic; }
+.tip-cpt tr.group td { border-top: 1px solid var(--border); }
+.tip-cpt td.bar-cell { width: 100%; padding-right: 0; }
+.tip-bar { display: flex; align-items: center; gap: 6px; }
+.tip-bar .track { flex: 1; min-width: 60px; height: 10px; border-radius: 3px; background: var(--bg); box-shadow: inset 0 0 0 0.5px var(--border); overflow: hidden; }
+.tip-bar .fill { display: block; height: 100%; background: var(--accent); opacity: 0.85; }
+.tip-bar .num { min-width: 44px; text-align: right; white-space: nowrap; }
+.tip-bar .stack { display: flex; flex: 1; min-width: 100px; height: 16px; border-radius: 4px; overflow: hidden; }
+/* a segment's label never widens the table, so shortening labels to fit doesn't change the widths */
+.tip-bar .seg { contain: inline-size; height: 100%; overflow: hidden; white-space: nowrap; text-align: center; font-size: 10px; font-weight: 600; line-height: 16px; }
+.tip-bar .seg span { padding: 0 3px; }
+/* rows that match the parents' evidence, in its colour; the rest fade */
+.tip-cpt tr.on td { background: color-mix(in srgb, var(--observed) 10%, transparent); }
+.tip-cpt.do tr.on td { background: color-mix(in srgb, var(--intervened) 10%, transparent); }
+.tip-cpt .observed { color: var(--observed); }
+.tip-cpt .intervened { color: var(--intervened); }
+.tip-cpt tr.off .fill, .tip-cpt tr.off .stack { opacity: 0.3; }
+.tip-cpt tr.off .num { color: var(--muted); }
+.tip-legend { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.tip-legend i { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 2px; }
 #node-sheet .sheet-cpt { margin-top: 8px; font-size: 14px; }
 #node-sheet .sheet-cpt summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
 #node-sheet .tip-cpt { font-size: 13px; }
