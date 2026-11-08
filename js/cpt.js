@@ -62,7 +62,7 @@
 
   // parseProb(text, format) as an exact decimal when the text is one (0.3 or 30%), else null.
   function exactProb(text, format) {
-    const m = /^([\d.]+(?:e-?\d+)?)(%?)$/i.exec(String(text).trim().replace(/\s+/g, ""));
+    const m = /^([\d.]+(?:e-?\d+)?)(%?)$/i.exec(String(text).trim().replace(/\s+/g, "").replace(/[−–]/g, "-"));
     if (!m || (!m[2] && format === "logodds")) return null;
     const [n, e] = dec(m[1]);
     return m[2] || format === "pct" ? [n, e + 2] : [n, e];
@@ -79,6 +79,7 @@
     if (x) return decNum(minus([1n, 0], x));
     let m;
     if ((m = /^([\d.]+)\/([\d.]+)$/.exec(t))) { const a = dec(m[1]), b = dec(m[2]); const [n, e] = minus(b, a); return decNum([n, e]) / decNum(b); }
+    if (format !== "logodds") return 1 - p;
     return /inf|∞/i.test(t) ? 1 - p : sigmoid(-t);
   }
 
@@ -506,23 +507,30 @@
       pins.set.add(c);
     }
 
-    // A row's states as exact decimals (see dec), the digits they show; null for a row that
-    // doesn't sum to 1, which has no exact P(≤ state).
-    const rowDecs = (vals) => (rowBad(vals) ? null : vals.map((x) => dec(M.fmtNum(x))));
-    const decSum = (xs) => xs.reduce(plus, [0n, 0]);
+    // A row's P(≤ state) values as exact decimals (see dec), from the digits its states show,
+    // which can add up to a little more or less than 1 (a 1e-20 state makes them 1 + 1e-20): the
+    // states up to c before the row's largest state, and 1 minus the states after c from there on.
+    // That difference then falls to the largest state, where rounding hides it, and every other
+    // state, such as a 1e-20 between two dividers, survives a copy and paste (see setBlock), where
+    // 0.4 + 1e-20 as a number is 0.4. Null for a row that doesn't sum to 1.
+    function exactCum(vals) {
+      if (rowBad(vals)) return null;
+      const decs = vals.map((x) => dec(M.fmtNum(x))), m = vals.reduce((b, x, i) => (x > vals[b] ? i : b), 0), out = [];
+      for (let c = 0, s = [0n, 0]; c < m; c++) out.push((s = plus(s, decs[c])));
+      for (let c = vals.length - 2, s = [0n, 0]; c >= m; c--) out[c] = minus([1n, 0], (s = plus(s, decs[c + 1])));
+      return out;
+    }
 
     // Gives the states, walked in from one end of a row, a total: each keeps its value while it
     // still fits, the first one that doesn't (or the last one) takes what's left, and any after it
     // drop to 0. The total is a number, or an exact decimal (see dec) when it was typed or copied
-    // as one. It's then worked out with the states' decimals, so a total of 0.40000000000000000001
-    // after a state of 0.4 leaves 1e-20, where floating point leaves 0; and states that already
-    // add up to the total to within `slack` (see setDividers) are left as they are.
-    function share(cpt, o, states, total, slack) {
+    // as one, worked out with the states' decimals: a total of 0.40000000000000000001 after a
+    // state of 0.4 leaves 1e-20, where floating point leaves 0. Null leaves the states as they are.
+    function share(cpt, o, states, total) {
+      if (total == null) return;
       let done = false;
       if (Array.isArray(total)) {
         const decs = states.map((s) => dec(M.fmtNum(cpt[o + s])));
-        const off = minus(total, decSum(decs));
-        if (slack && minus(slack, [off[0] < 0n ? -off[0] : off[0], off[1]])[0] >= 0n) return;
         let left = total;
         states.forEach((s, i) => {
           if (done) cpt[o + s] = 0;
@@ -545,20 +553,16 @@
 
     // Puts dividers c0..c1 of the row at offset o in place (divider c comes after state c): the
     // states up to c0 then add up to `below`, the states after c1 to `above` (each a number or an
-    // exact decimal, see share), and the states between get `between`. Walking in from each end
-    // of the row (see share), the states beside the outer dividers take up the difference, and a
-    // divider that passes others pushes them along, so the states it passes drop to 0. With
-    // c0 = c1 and above = 1 - below, that moves one divider to `below`, and a row that didn't sum
-    // to 1 does afterwards.
+    // exact decimal, or null to leave that side as it is; see share), and the states between get
+    // `between`. Walking in from each end of the row (see share), the states beside the outer
+    // dividers take up the difference, and a divider that passes others pushes them along, so the
+    // states it passes drop to 0. With c0 = c1 and above = 1 - below, that moves one divider to
+    // `below`, and a row that didn't sum to 1 does afterwards.
     function setDividers(cpt, o, c0, c1, below, between, above) {
-      const k = card(), decs = rowDecs(cpt.slice(o, o + k));
-      // how far the row's decimals miss 1 (a 1e-20 state makes it 1 + 1e-20): an outer divider
-      // put back where it is to within that stays put, so pasting a row's values back changes nothing
-      const slack = decs && minus([1n, 0], decSum(decs));
-      if (slack && slack[0] < 0n) slack[0] = -slack[0];
+      const k = card();
       between.forEach((p, i) => (cpt[o + c0 + 1 + i] = p));
-      share(cpt, o, [...Array(c0 + 1).keys()], below, slack);
-      share(cpt, o, [...Array(k - c1 - 1).keys()].map((i) => k - 1 - i), above, slack);
+      share(cpt, o, [...Array(c0 + 1).keys()], below);
+      share(cpt, o, [...Array(k - c1 - 1).keys()].map((i) => k - 1 - i), above);
     }
 
     // Sets one cell of the cumulative view, P(≤ state c), to v, with comp 1 - v; see setDividers.
@@ -593,29 +597,33 @@
         for (let r = r0; r <= Math.min(r1, rows.length - 1); r++) {
           const o = rows[r].offset;
           if (cum) {
-            // Worked out on the row scaled to sum to 1 (and scaled back by its total T), so the
-            // weights of a row that doesn't sum to 1, such as 1e-200 · 2e-200, neither underflow
-            // nor overflow. With a = k·L + R at a divider with P(≤) = L and P(>) = R, its L
-            // becomes k·L / a. Each changed state is worked out from its own probability p rather
-            // than by subtracting new L's, which would lose a 1e-20 (or leave rounding residue
-            // where there was 0): between two selected dividers p becomes k·p / (a₁·a₂); just below
-            // the first one, after an unselected divider at L₀ = 1 − R₀,
+            // With a = k·L + R at a divider with P(≤) = L and P(>) = R (the row scaled to sum to
+            // 1), its L becomes k·L / a. Each changed state is worked out from its own weight p
+            // rather than by subtracting new L's, which would lose a 1e-20 (or leave rounding
+            // residue where there was 0): between two selected dividers p becomes p·k / (a₁·a₂);
+            // just below the first one, after an unselected divider at L₀ (R₀ after it),
             // ((k − 1)·L₀·R₀ + p·(k·R₀ + L₀)) / a; just above the last one, before an unselected
-            // divider at 1 − R₂, (p + (1 − k)·L·R₂) / a. When one of those comes out negative,
-            // the divider passes unselected ones and pushes them along (see share).
+            // divider with R₂ after it, (p + (1 − k)·L·R₂) / a. The scaled row only gives
+            // dimensionless factors, which multiply the row's own weights, so a row that doesn't
+            // sum to 1, such as 1e200 · 1e-200 · 1e200, neither underflows nor overflows: a product
+            // such as L₀·R₀ takes the larger of the two scaled and the other in the row's units.
+            // When a state below or above comes out negative, the divider passes unselected ones
+            // and pushes them along (see share).
             const vals = rowVals(r), T = sum(vals);
             if (!(T > 0 && T < Infinity)) continue;
-            const q = vals.map((x) => x / T), shown = shownVals(q);
+            const raw = shownVals(vals), shown = shownVals(vals.map((x) => x / T));
             const a = (c) => k * shown[c].v + shown[c].rest;
+            const times = (x, rawX, y, rawY) => (x >= y ? x * rawY : rawX * y); // x·y·T
             const [L0, R0] = c0 ? [shown[c0 - 1].v, shown[c0 - 1].rest] : [0, 1];
-            const R2 = c1 + 1 < n - 1 ? shown[c1 + 1].rest : 0;
-            const first = ((k - 1) * L0 * R0 + q[c0] * (k * R0 + L0)) / a(c0);
-            const next = (q[c1 + 1] + (1 - k) * shown[c1].v * R2) / a(c1);
-            q.slice(c0 + 1, c1 + 1).forEach((p, i) => (cpt[o + c0 + 1 + i] = round(T * ((k * p) / (a(c0 + i) * a(c0 + i + 1))))));
-            if (first >= 0) cpt[o + c0] = round(T * first);
-            else share(cpt, o, [...Array(c0 + 1).keys()], T * ((k * shown[c0].v) / a(c0)));
-            if (next >= 0) cpt[o + c1 + 1] = round(T * next);
-            else share(cpt, o, [...Array(n - c1 - 1).keys()].map((i) => n - 1 - i), T * (shown[c1].rest / a(c1)));
+            const LR0 = c0 ? times(L0, raw[c0 - 1].v, R0, raw[c0 - 1].rest) : 0;
+            const LR2 = c1 + 1 < n - 1 ? times(shown[c1].v, raw[c1].v, shown[c1 + 1].rest, raw[c1 + 1].rest) : 0;
+            const first = ((k - 1) * LR0) / a(c0) + vals[c0] * ((k * R0 + L0) / a(c0));
+            const next = vals[c1 + 1] / a(c1) + ((1 - k) * LR2) / a(c1);
+            for (let s = c0 + 1; s <= c1; s++) cpt[o + s] = round(vals[s] * (k / (a(s - 1) * a(s))));
+            if (first >= 0) cpt[o + c0] = round(first);
+            else share(cpt, o, [...Array(c0 + 1).keys()], raw[c0].v * (k / a(c0)));
+            if (next >= 0) cpt[o + c1 + 1] = round(next);
+            else share(cpt, o, [...Array(n - c1 - 1).keys()].map((i) => n - 1 - i), raw[c1].rest / a(c1));
           } else {
             let g = 0, h = 0;
             for (let s = 0; s < n; s++) picked(s) ? (g += cpt[o + s]) : (h += cpt[o + s]);
@@ -632,9 +640,12 @@
     // Writes a block of values the way the table shows them: states, or P(≤ state) in the
     // cumulative view. Each is { v, comp, exact }, with comp 1 - v when it's known more exactly
     // (see parseComplement) and exact the value as an exact decimal when it was typed as one (see
-    // exactProb). A row's P(≤ state) values in order set their dividers together, each state between
-    // two of them being the difference of their exact decimals, so a 1e-20 there survives a copy
-    // and paste; out of order, each moves its divider in turn, left to right, pushing the others.
+    // exactProb). A row's P(≤ state) values in order set their dividers together, so a 1e-20
+    // between two of them survives a copy and paste: each state between is the difference of the
+    // two values' exact decimals, or near 1 of their complements, where 1 - 1e-20 is 1 as a
+    // number but its complement keeps the 1e-20. A value that is exactly what copying the row
+    // gives (see exactCum) leaves its divider as it is. Out of order, each value moves its divider
+    // in turn, left to right, pushing the others.
     function setBlock(r0, c0, matrix) {
       editCpt(() => {
         const cpt = node().cpt, cum = cumulative();
@@ -642,10 +653,15 @@
           if (r0 + i >= rows.length) return;
           const o = rows[r0 + i].offset, line = full.slice(0, cols() - c0);
           if (!cum) return line.forEach(({ v }, j) => (cpt[o + c0 + j] = v));
-          const below = (x) => x.exact || x.v, above = (x) => (x.exact ? minus([1n, 0], x.exact) : x.comp >= 0 ? x.comp : 1 - x.v);
-          if (line.every((x, j) => !j || x.v >= line[j - 1].v)) {
-            const between = line.slice(1).map((x, j) => round(Math.max(0, x.exact && line[j].exact ? decNum(minus(x.exact, line[j].exact)) : x.v - line[j].v)));
-            setDividers(cpt, o, c0, c0 + line.length - 1, below(line[0]), between, above(line.at(-1)));
+          const vals = rowVals(r0 + i), now = exactCum(vals);
+          const kept = line.map((x, j) => !!(x.exact && now && minus(x.exact, now[c0 + j])[0] === 0n));
+          const rest = (x) => (x.comp >= 0 ? x.comp : 1 - x.v);
+          // P(≤) of b minus P(≤) of a
+          const diff = (a, b) => (a.exact && b.exact ? decNum(minus(b.exact, a.exact)) : a.v > 0.5 ? rest(a) - rest(b) : b.v - a.v);
+          const below = (x) => x.exact || x.v, above = (x) => (x.exact ? minus([1n, 0], x.exact) : rest(x));
+          if (line.every((x, j) => !j || diff(line[j - 1], x) >= 0)) {
+            const between = line.slice(1).map((x, j) => (kept[j] && kept[j + 1] ? vals[c0 + j + 1] : round(diff(line[j], x))));
+            setDividers(cpt, o, c0, c0 + line.length - 1, kept[0] ? null : below(line[0]), between, kept.at(-1) ? null : above(line.at(-1)));
           } else line.forEach((x, j) => setDividers(cpt, o, c0 + j, c0 + j, below(x), [], above(x)));
         });
       });
@@ -755,16 +771,16 @@
       let { r0, r1, c0, c1 } = range();
       let src = r0;
       if (r0 === r1) { if (r0 === 0) return; src = r0 - 1; } else r0++;
-      const vals = rowVals(src);
-      if (cumulative()) {
-        // the source row's dividers, exact when it can have them, with the states between them
-        // copied as they are
-        const shown = shownVals(vals), decs = rowDecs(vals);
-        const below = decs ? decSum(decs.slice(0, c0 + 1)) : shown[c0].v, above = decs ? decSum(decs.slice(c1 + 1)) : shown[c1].rest;
+      const vals = rowVals(src), exact = cumulative() && exactCum(vals), lines = (line) => Array.from({ length: r1 - r0 + 1 }, () => line);
+      // the source row's P(≤ state) values the way a copy and paste gives them (see setBlock)
+      if (exact) setBlock(r0, c0, lines(exact.slice(c0, c1 + 1).map((e) => ({ v: decNum(e), comp: decNum(minus([1n, 0], e)), exact: e }))));
+      else if (cumulative()) {
+        // a row that doesn't sum to 1: its dividers, with the states between them as they are
+        const shown = shownVals(vals);
         editCpt(() => {
-          for (let r = r0; r <= r1; r++) setDividers(node().cpt, rows[r].offset, c0, c1, below, vals.slice(c0 + 1, c1 + 1), above);
+          for (let r = r0; r <= r1; r++) setDividers(node().cpt, rows[r].offset, c0, c1, shown[c0].v, vals.slice(c0 + 1, c1 + 1), shown[c1].rest);
         });
-      } else setBlock(r0, c0, Array.from({ length: r1 - r0 + 1 }, () => vals.slice(c0, c1 + 1).map((v) => ({ v }))));
+      } else setBlock(r0, c0, lines(vals.slice(c0, c1 + 1).map((v) => ({ v }))));
     }
 
     function clearSelection() {
@@ -781,27 +797,15 @@
       const lines = [];
       for (let r = r0; r <= r1; r++) {
         const line = [], vals = rowVals(r), shown = shownVals(vals), pct = prefs.format !== "prob";
-        // P(≤ state c) as an exact decimal, so the states between copied dividers paste back as
-        // they were (see setBlock), where 0.4 + 1e-20 as a number is 0.4: the states up to c, or
-        // 1 minus the states after c. Those differ by however much the row's decimals miss 1 (a
-        // 1e-20 state makes it 1 + 1e-20), so the copy takes the first up to some divider m and
-        // the second from there on, putting that difference where rounding hides it rather than
-        // where it would take a 1e-20 with it: on the largest of the states between the copied
-        // dividers, the states before the first one (m = c0), and the states after the last one.
-        const decs = cumulative() && rowDecs(vals);
-        const mass = (j) => (j === c0 ? shown[c0].v : j === c1 + 1 ? shown[c1].rest : vals[j]);
-        let m = c0;
-        for (let j = c0 + 1; j <= c1 + 1; j++) if (mass(j) >= mass(m)) m = j;
+        // P(≤ state) is copied as an exact decimal (see exactCum)
+        const exact = cumulative() && exactCum(vals);
         for (let c = c0; c <= c1; c++) {
           const { v } = shown[c];
           // percentages carry their % sign, so pasting reads them back the same in any format (log-odds
           // are copied as percentages too: bare log-odds would be misread as probabilities elsewhere).
           let text = M.fmtNum(pct ? v * 100 : v);
-          if (decs) {
-            // (either way, kept from 0 to 1)
-            const lower = decSum(decs.slice(0, c + 1)), upper = minus([1n, 0], decSum(decs.slice(c + 1)));
-            const exact = c >= m ? (upper[0] >= 0n ? upper : lower) : minus([1n, 0], lower)[0] >= 0n ? lower : upper;
-            const want = pct ? times100(exact) : exact;
+          if (exact) {
+            const want = pct ? times100(exact[c]) : exact[c];
             if (minus(dec(text), want)[0] !== 0n) text = decText(want); // the short form when it's exact
           }
           line.push(pct ? text + "%" : text);
