@@ -81,15 +81,20 @@
   // scenario. Readers can set evidence; nothing they do is saved until they open the editor.
   let embedded = false;
   try { embedded = window.self !== window.top; } catch { embedded = true; }
+  // LessWrong widgets are frames sandboxed without allow-popups, so no script or link here can
+  // open a tab. The reader still can: Ctrl/⌘-click, middle-click or the context menu on a link
+  // opens it in a new tab, outside the sandbox. A frame can't read its sandbox flags, but it can
+  // see which site embeds it.
+  const noPopups = embedded && [...(location.ancestorOrigins || [])].some((o) => /^https:\/\/([^/]+\.)?(lesswrong\.com|alignmentforum\.org)$/.test(o));
+  const modClick = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘-click" : "Ctrl-click";
   if (embedded) {
     document.body.classList.add("embedded");
     const b = document.querySelector('[data-action="open-editor"]');
     for (const s of b.children) s.textContent += " ↗";
     b.title = "Open this network, with the evidence set here, in the full editor in a new tab";
-    // LessWrong widgets are frames sandboxed without allow-popups, so nothing here can open a
-    // tab. A frame can't read its sandbox flags, but it can see which site embeds it.
-    if ([...(location.ancestorOrigins || [])].some((o) => /^https:\/\/([^/]+\.)?(lesswrong\.com|alignmentforum\.org)$/.test(o))) {
+    if (noPopups) {
       document.body.classList.add("no-popups");
+      document.querySelector('[data-action="open-viewer"]').title = `${modClick} or middle-click to open this network, with the evidence set here, in a full-screen viewer in a new tab, or click to copy its link`;
     }
   }
   let viewerEvidenceChanged = false;
@@ -812,13 +817,13 @@
 
   let toastTimer;
   let lastToast = "";
-  function toast(msg) {
+  function toast(msg, ms = 2600) {
     lastToast = msg;
     const t = $("#toast");
     t.textContent = msg;
     t.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
+    toastTimer = setTimeout(() => t.classList.remove("show"), ms);
   }
 
   // ------------------------------------------------------------ geometry
@@ -2343,20 +2348,43 @@
   // Opens the network in a new tab. Popup blockers (Safari, in a sandboxed embed) allow
   // window.open only synchronously in the click, but compressing a link is asynchronous, so the
   // viewer keeps its links ready, refreshed right after each change.
+  // The Full screen link's href is kept current too, for readers who open it in a new tab themselves.
+  // A viewer opened from ?src= links to the same file until the reader changes its evidence.
   let readyLinks = null, linksTimer = 0;
+  const linksKey = () => [exportCode(), forcedTheme, initialState?.code].join("\n");
   function prepareLinks() {
     clearTimeout(linksTimer);
     linksTimer = setTimeout(async () => {
-      const code = exportCode(), key = code + "\n" + forcedTheme;
+      const code = exportCode(), key = linksKey();
       if (readyLinks?.key === key) return;
-      const links = { key, viewer: await netLink(true, code), editor: await netLink(false, code) };
-      if (key === exportCode() + "\n" + forcedTheme) readyLinks = links;
+      const src = new URLSearchParams(location.search).get("src");
+      const srcLink = (asViewer) => location.href.replace(/[?#].*$/, "") + (asViewer ? "?view" + (forcedTheme ? "&theme=" + forcedTheme : "") + "&" : "?") + "src=" + encodeURIComponent(src);
+      const links = src && code === initialState?.code
+        ? { key, viewer: srcLink(true), editor: srcLink(false) }
+        : { key, viewer: await netLink(true, code), editor: await netLink(false, code) };
+      if (key !== linksKey()) return;
+      readyLinks = links;
+      document.querySelector('[data-action="open-viewer"]').href = links.viewer;
     });
   }
   function openLink(asViewer) {
-    const links = readyLinks?.key === exportCode() + "\n" + forcedTheme ? readyLinks : null;
-    if (links) window.open(asViewer ? links.viewer : links.editor, "_blank", "noopener");
-    else netLink(asViewer).then(url => window.open(url, "_blank", "noopener"));
+    const links = readyLinks?.key === linksKey() ? readyLinks : null;
+    const open = noPopups ? copyLink : (url) => window.open(url, "_blank", "noopener");
+    if (links) open(asViewer ? links.viewer : links.editor);
+    else netLink(asViewer).then(open);
+  }
+  // Where the embedding site blocks new tabs, a plain click copies the link instead (its sandbox
+  // blocks navigator.clipboard in Chrome, but not execCommand's copy event) and says how to open it.
+  function copyLink(url) {
+    let copied = false; // execCommand's result isn't reliable: WebKit copies yet returns false
+    const copy = (e) => { e.clipboardData.setData("text/plain", url); e.preventDefault(); copied = true; };
+    document.addEventListener("copy", copy);
+    try { document.execCommand("copy"); } catch { /* reported below */ }
+    document.removeEventListener("copy", copy);
+    const hint = (matchMedia("(pointer: coarse)").matches ? "touch and hold" : modClick) + " Full screen";
+    toast(copied
+      ? `Link copied: paste it into a new tab, or ${hint}.`
+      : `${hint[0].toUpperCase() + hint.slice(1)} to open it in a new tab.`, 6000);
   }
 
   // At about 800px wide, sized to the network's shape, plus title and evidence bars.
@@ -2825,6 +2853,8 @@
 
   document.addEventListener("click", (e) => {
     const b = e.target.closest("[data-action]");
+    // Ctrl/⌘/Shift-clicking a link opens it in a new tab or window: the browser's job.
+    if (b?.href && (e.ctrlKey || e.metaKey || e.shiftKey)) return;
     if (b && actions[b.dataset.action]) { e.preventDefault(); actions[b.dataset.action](); }
   });
 
@@ -2887,8 +2917,9 @@
       if (viewer && embedded && linked && !loaded.some(Boolean)) return fail();
       fallBack();
       if (viewer) {
-        initialState = { key: viewerState(), evidence: new Map(evidence), modes: [clickMode, softMode, softKind] };
+        initialState = { key: viewerState(), evidence: new Map(evidence), modes: [clickMode, softMode, softKind], code: exportCode() };
         updateReset();
+        prepareLinks();
       }
       document.body.classList.remove("viewer-loading");
       if (viewer) fit();

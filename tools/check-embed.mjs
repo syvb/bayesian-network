@@ -95,17 +95,38 @@ try {
   }
   for (const site of ["https://www.lesswrong.com/posts/x", "https://example.com/post"]) {
     // A LessWrong widget is a srcdoc frame sandboxed with only allow-scripts, so the viewer
-    // inside it can't open tabs and mustn't offer to; the same frame elsewhere still does.
+    // inside it can't open tabs. Full screen is a link there: a plain click copies it, and
+    // Ctrl-clicking it opens it in a new tab, with the reader's evidence.
     const page = await browser.newPage();
-    await page.route(site, route => route.fulfill({ contentType: "text/html", body: `<iframe sandbox="allow-scripts" srcdoc="&lt;iframe src='${base}/?view${hash}'&gt;&lt;/iframe&gt;"></iframe>` }));
+    await page.route(site, route => route.fulfill({ contentType: "text/html", body: `<iframe sandbox="allow-scripts" width="800" height="600" srcdoc="&lt;iframe width='760' height='560' src='${base}/?view${hash}'&gt;&lt;/iframe&gt;"></iframe>` }));
     await page.goto(site);
     await page.waitForFunction(() => document.querySelector("iframe").contentWindow.frames.length === 1);
     const frame = page.frames().find(f => f.url().startsWith(base));
     await frame.waitForFunction(() => document.querySelectorAll(".node").length === 4);
-    assert.equal(await frame.locator('[data-action="open-viewer"]').isVisible(), !site.includes("lesswrong"));
+    const fullScreen = frame.locator('[data-action="open-viewer"]');
+    assert.equal(await fullScreen.isVisible(), true);
+    if (site.includes("lesswrong")) {
+      const before = await fullScreen.getAttribute("href");
+      await frame.locator('.node[data-node="3"] [data-state="0"]').click();
+      const evidence = await frame.locator("#evidence-bar").textContent();
+      await frame.waitForFunction(before => document.querySelector('[data-action="open-viewer"]').getAttribute("href") !== before, before);
+      const opened = [];
+      page.context().on("page", p => opened.push(p));
+      await fullScreen.click();
+      await page.waitForTimeout(300);
+      assert.equal(opened.length, 0);
+      assert.match(await frame.locator("#toast").textContent(), /^Link copied/);
+      await fullScreen.click({ modifiers: ["ControlOrMeta"] });
+      await page.waitForTimeout(300);
+      assert.equal(opened.length, 1);
+      await opened[0].waitForFunction(() => document.querySelectorAll(".node").length === 4 && !document.body.classList.contains("viewer-loading"));
+      assert.equal(await opened[0].locator("#evidence-bar").textContent(), evidence);
+      // The reader's tab is outside the sandbox, so it has storage and offers the editor.
+      assert.equal(await opened[0].locator('[data-action="open-editor"]').isVisible(), true);
+    }
     await page.close();
   }
-  console.log("PASS LessWrong widget: no new-tab buttons there; other sites keep Full screen");
+  console.log("PASS LessWrong widget: Full screen copies its link on click and opens a new tab on Ctrl-click; other sites keep Full screen");
   {
     // An embed whose link can't be opened shows why, not the demo or any other network.
     const page = await browser.newPage();
@@ -213,6 +234,8 @@ try {
     // Without storage the editor can't work, so nothing offers it; Full screen still does.
     assert.equal(await frame.locator('[data-action="open-editor"]').isVisible(), false);
     assert.equal(await frame.locator('[data-action="open-viewer"]').isVisible(), true);
+    // Until the reader sets evidence, a ?src= embed's Full screen links to its file (after, to a #net= link).
+    if (source === "src") await frame.waitForFunction(href => document.querySelector('[data-action="open-viewer"]').href === href, `${base}/?view&src=%2Fnetwork.py`);
     // Hovering a node shows its probability table; Reset is off until something changes.
     const wet = await frame.locator('.node[data-node="4"] text.name').boundingBox();
     await page.mouse.move(wet.x + wet.width / 2, wet.y + wet.height / 2, { steps: 4 });

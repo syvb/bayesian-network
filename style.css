@@ -64,7 +64,7 @@ body {
   background: var(--bg);
 }
 button, input, select, textarea { font: inherit; color: inherit; }
-button, .file-button {
+button, .file-button, a.button {
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: 6px;
@@ -72,7 +72,9 @@ button, .file-button {
   cursor: pointer;
   white-space: nowrap;
 }
-button:hover, .file-button:hover { border-color: var(--accent); }
+/* A link styled as a button, so readers can also open it in a new tab themselves. */
+a.button { color: inherit; text-decoration: none; }
+button:hover, .file-button:hover, a.button:hover { border-color: var(--accent); }
 button:disabled { opacity: 0.45; cursor: default; border-color: var(--border); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { color: var(--danger); }
@@ -138,7 +140,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft
 /* Tighter toolbar so it stays on one row down to about 860px. */
 @media (max-width: 1130px) {
   .toolbar { gap: 3px; }
-  .toolbar button { padding: 4px 5px; }
+  .toolbar button, .toolbar a.button { padding: 4px 5px; }
   .toolbar .sep { margin: 0 2px; }
 }
 
@@ -670,7 +672,7 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 body.viewer .viewer-only { display: revert; }
 body:not(.embedded) .embed-only { display: none; }
 body.no-storage [data-action="open-editor"] { display: none; }
-body.no-popups [data-action="open-viewer"], body.no-popups [data-action="open-editor"] { display: none; }
+body.no-popups [data-action="open-editor"] { display: none; }
 body.viewer .toolbar > :not(.brand, .viewer-only, .grow, [data-action="fit"]) { display: none; }
 body.viewer #viewer-title { font-weight: 600; margin-right: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 body.viewer #side, body.viewer #cpt-dock { display: none; }
