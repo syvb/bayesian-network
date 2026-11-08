@@ -688,6 +688,34 @@ try {
     await fresh.close();
     console.log("PASS unfocused window: a link opens and is editable without focus, and no other network flashes first");
   }
+
+  {
+    // Older versions saved whatever layout a link gave, markup included. Neither taking a
+    // network over from another tab nor reopening it may write that into the SVG.
+    const ctx = await browser.newContext();
+    const [A, B] = [await ctx.newPage(), await ctx.newPage()];
+    for (const page of [A, B]) { await page.goto(base); await ready(page); }
+    await ready(B);
+    await B.evaluate(async () => {
+      const storage = await BNStorage.open(), record = await storage.get(sessionStorage.getItem("bn-editor-current"));
+      record.net.nodes[0].x = '0,0)"><svg onload="window.storedExecuted=true"></svg><g transform="translate(0';
+      await storage.put(record);
+    });
+    const safe = async (page, step) => {
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await page.evaluate(() => window.storedExecuted === true), false, `stored layout executed JavaScript (${step})`);
+      assert.equal(await page.locator("#viewport [onload]").count(), 0);
+      assert.ok((await network(page)).nodes.every(n => Number.isFinite(n.x) && Number.isFinite(n.y)));
+    };
+    await ready(A);
+    await A.waitForFunction(() => /Updated from another tab/.test(document.querySelector("#toast")?.textContent));
+    await safe(A, "handover");
+    await A.reload();
+    await ready(A);
+    await safe(A, "reopen");
+    await ctx.close();
+    console.log("PASS saved markup in a coordinate: taking over or reopening the network lays it out again without running it");
+  }
   await unsupported.close();
 } finally {
   await browser?.close();

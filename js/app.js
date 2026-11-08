@@ -258,7 +258,7 @@
       // A fresh transaction, after acquiring the lock, is the handover's source of truth.
       // Dirty memory belongs to a newly created network that has not been saved yet.
       if (!unsaved && savedVersion === saveVersion) {
-        const latestRecord = await storage.get(id);
+        const latestRecord = await readRecord(id);
         if (controller.signal.aborted || id !== netId) return;
         const latest = latestRecord?.net;
         if (!latest) {
@@ -423,6 +423,13 @@
   const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   const byRecent = (list) => [...list].sort((a, b) => b.updated - a.updated);
   const makeRecord = (id, n, source = null) => ({ id, net: n, evidence: [], name: n.name, nodes: n.nodes.length, updated: Date.now(), source, edited: false });
+  // render() writes coordinates into SVG markup, and older versions saved any layout a link
+  // gave, markup included. Lay out again a saved network without numeric positions.
+  async function readRecord(id) {
+    const r = await storage.get(id);
+    if (r && !r.net.nodes.every((n) => Number.isFinite(n.x) && Number.isFinite(n.y))) M.autoLayout(r.net);
+    return r;
+  }
 
   // Called under the startup lock, including when a viewer becomes an editor.
   async function migrateIndex() {
@@ -473,7 +480,7 @@
   // Makes network `id` the one being edited, keeping the undo history of the one it replaces.
   // The caller has already flushed and released the previous network.
   async function enterNetwork(id, initial = null) {
-    const next = initial || await storage.get(id);
+    const next = initial || await readRecord(id);
     if (!next) return false;
     focusOnReturn = null;
     if (netId && netId !== id && !unsaved) histories.set(netId, { undo: undoStack, redo: redoStack, snapshot: JSON.stringify(net) });
