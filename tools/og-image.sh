@@ -24,6 +24,8 @@ $B eval '(() => {
   return 1;
 })()' >/dev/null
 sleep 2
+# Keep the toolbar on one row and outside the canvas crop, without changing the app.
+$B eval 'document.querySelector(".toolbar .hint").style.display = "none"' >/dev/null
 $B click "#canvas" >/dev/null
 $B press f >/dev/null
 sleep 0.6
