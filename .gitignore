@@ -9,7 +9,8 @@ __pycache__/
 .venv/
 
 # Amp's local working files (screenshots, transfers, portals)
-.amp/
+.amp/*
+!.amp/services.yaml
 
 # Editors and operating systems
 .DS_Store

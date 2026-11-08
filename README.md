@@ -110,6 +110,27 @@ The importer is checked against pyAgrum itself: scripts and notebooks from pyAgr
 
 The site needs no build; serve the repository root with any static server (`python3 -m http.server`). The scripts in `tools/` check the editor from Node; the pyAgrum checks need `pip install pyagrum` (set `PYTHON` to use a particular interpreter).
 
+### Amp Orbs
+
+`.agents/setup` installs pinned Playwright and its headless Chromium, plus pyAgrum in an isolated `.venv`, so verification doesn't require system Python packages or a manually located `CHROME_BIN`. It runs on fresh Orb setup and is safe to rerun manually. No secrets, database, or resume hook are needed. The app itself still has no dependencies or build step.
+
+Run `amp orb services ensure` to start the supervised static preview and print its portal URL. The service survives Orb updates and pause/resume; rerunning ensure reuses it. Generated portal state stays ignored by Git.
+
+After setup, run these checks from the repository root (browser checks start their own temporary servers; the preview is not required):
+
+```bash
+node tools/roundtrip.mjs
+node tools/check-worker.mjs
+node tools/check-embed.mjs
+node tools/check-tabs.mjs
+PYTHON="$PWD/.venv/bin/python" node tools/check-import.mjs
+PYTHON="$PWD/.venv/bin/python" node tools/check-inference.mjs
+```
+
+For visual interaction recordings, reuse one named `agent-browser` session consistently and start at 15 fps if 2× captures overload the encoder. Playwright's headless Chromium is for the regression scripts; `agent-browser` continues to use the Orb's preinstalled browser.
+
+### Checks and utilities
+
 - `node tools/roundtrip.mjs [script.py ...]`: exports every demo (and each given script) to pyAgrum code, imports it again and checks nothing changed.
 - `node tools/check-tabs.mjs`: checks same-network and different-network tab handovers, text focus/caret, unfinished field/CPT edits, evidence, undo, reload, deletion, lock contention, failed-transaction recovery, demo reuse races and legacy-storage migration. Requires Playwright and Chromium, like `check-embed.mjs` below.
 - `node tools/check-embed.mjs`: checks hash and hosted-file embeds in a storage-blocked sandbox, evidence controls, and opening a full-page viewer with evidence retained on reload; also checks the embed dialog, image download/URL entry, inline data images, successful swaps, stale-preview prevention and failure fallbacks. Needs `npm install --no-save --package-lock=false playwright` and `npx playwright install chromium`, or `CHROME_BIN` pointing to an installed Chromium.

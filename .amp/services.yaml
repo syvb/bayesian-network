@@ -1,0 +1,7 @@
+services:
+  preview:
+    command: python3 -m http.server "$PORT" --bind 0.0.0.0
+    health: /index.html
+    portal:
+      title: Bayesian network editor
+      description: Static editor preview; changes appear on reload. No build or sign-in required.

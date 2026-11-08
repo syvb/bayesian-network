@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# The static app has no dependencies; these are only for tools/check-*.mjs.
+# Node, Python and uv are provided by the standard Orb image.
+echo "Installing browser test dependencies"
+time npm install --no-save --package-lock=false playwright@1.65.0
+time ./node_modules/.bin/playwright install chromium --only-shell
+
+echo "Installing the pyAgrum reference implementation"
+if [[ ! -d .venv ]]; then
+  uv venv --python python3 .venv
+fi
+time uv pip install --python .venv/bin/python pyagrum==3.3.2
+
+echo 'Setup complete. Use PYTHON="$PWD/.venv/bin/python" for pyAgrum checks.'
