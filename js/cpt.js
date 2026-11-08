@@ -642,10 +642,11 @@
     // (see parseComplement) and exact the value as an exact decimal when it was typed as one (see
     // exactProb). A row's P(≤ state) values in order set their dividers together, so a 1e-20
     // between two of them survives a copy and paste: each state between is the difference of the
-    // two values' exact decimals, or near 1 of their complements, where 1 - 1e-20 is 1 as a
-    // number but its complement keeps the 1e-20. A value that is exactly what copying the row
-    // gives (see exactCum) leaves its divider as it is. Out of order, each value moves its divider
-    // in turn, left to right, pushing the others.
+    // two values as decimals, their exact ones when they have them, else (for log-odds or 1/3) the
+    // decimal of their number, or near 1 of their complement, where 1 - 1e-20 is 1 as a number
+    // but its complement keeps the 1e-20. A value that is exactly what copying the row gives (see
+    // exactCum) leaves its divider as it is. Out of order, each value moves its divider in turn,
+    // left to right, pushing the others.
     function setBlock(r0, c0, matrix) {
       editCpt(() => {
         const cpt = node().cpt, cum = cumulative();
@@ -656,8 +657,8 @@
           const vals = rowVals(r0 + i), now = exactCum(vals);
           const kept = line.map((x, j) => !!(x.exact && now && minus(x.exact, now[c0 + j])[0] === 0n));
           const rest = (x) => (x.comp >= 0 ? x.comp : 1 - x.v);
-          // P(≤) of b minus P(≤) of a
-          const diff = (a, b) => (a.exact && b.exact ? decNum(minus(b.exact, a.exact)) : a.v > 0.5 ? rest(a) - rest(b) : b.v - a.v);
+          const decOf = (x) => x.exact || (x.v > 0.5 ? minus([1n, 0], dec(String(rest(x)))) : dec(String(x.v)));
+          const diff = (a, b) => decNum(minus(decOf(b), decOf(a))); // P(≤) of b minus P(≤) of a
           const below = (x) => x.exact || x.v, above = (x) => (x.exact ? minus([1n, 0], x.exact) : rest(x));
           if (line.every((x, j) => !j || diff(line[j - 1], x) >= 0)) {
             const between = line.slice(1).map((x, j) => (kept[j] && kept[j + 1] ? vals[c0 + j + 1] : round(diff(line[j], x))));
