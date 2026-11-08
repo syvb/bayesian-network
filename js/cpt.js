@@ -650,7 +650,7 @@
       editCpt(() => {
         const cpt = node().cpt, cum = cumulative();
         matrix.forEach((full, i) => {
-          if (r0 + i >= rows.length) return;
+          if (r0 + i >= Math.min(rows.length, MAX_ROWS)) return; // only the rows the table shows
           const o = rows[r0 + i].offset, line = full.slice(0, cols() - c0);
           if (!cum) return line.forEach(({ v }, j) => (cpt[o + c0 + j] = v));
           const vals = rowVals(r0 + i), now = exactCum(vals);
