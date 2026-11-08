@@ -18,7 +18,31 @@ const server = createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   if (url.pathname === "/image-article") {
     res.setHeader("Content-Type", "text/html");
-    res.end(imageEmbed);
+    res.end(url.searchParams.has("twice") ? imageEmbed + imageEmbed : imageEmbed);
+  } else if (url.pathname === "/legacy-image-article") {
+    // Embed code copied before js/embed.js had this inline script. Published copies can't change.
+    const src = `${base}/?view&amp;image-first${hash}`;
+    res.setHeader("Content-Type", "text/html");
+    res.end(`<div style="position: relative; height: 500px; overflow: hidden;">
+  <a href="${src}" target="_blank" rel="noopener" style="display: block; height: 100%;"><img src="/network.svg" alt="Wet grass" style="display: block; width: 100%; height: 100%; object-fit: contain;"></a>
+  <iframe data-src="${src}" title="Wet grass" aria-hidden="true" tabindex="-1" style="position: absolute; inset: 0; width: 100%; height: 100%; border: 0; visibility: hidden;"></iframe>
+  <script>
+    (function () {
+      var box = document.currentScript.parentElement, frame = box.querySelector('iframe');
+      var origin = window.origin === 'null' ? 'null' : new URL(frame.dataset.src).origin;
+      function ready(event) {
+        if (event.source !== frame.contentWindow || event.origin !== origin || event.data !== 'bn-viewer-ready') return;
+        box.querySelector('a').inert = true;
+        frame.style.visibility = 'visible';
+        frame.removeAttribute('aria-hidden');
+        frame.removeAttribute('tabindex');
+        window.removeEventListener('message', ready);
+      }
+      window.addEventListener('message', ready);
+      frame.src = frame.dataset.src;
+    })();
+  </script>
+</div>`);
   } else if (url.pathname === "/widget-image-article") {
     // Like a LessWrong widget: the embed code in a srcdoc frame sandboxed with only allow-scripts.
     res.setHeader("Content-Type", "text/html");
@@ -407,6 +431,8 @@ try {
     imageEmbed = await editor.evaluate(() => window.copied);
     assert.equal(imageEmbed, await editor.locator("#embed-code").inputValue());
     assert.match(imageEmbed, /a=1&amp;b=2/);
+    // The embed's script is one line that loads js/embed.js from the app, which can change later.
+    assert.match(imageEmbed, new RegExp(`\n  <script src="${base}/js/embed.js" async></script>\n</div>$`));
     await editor.locator('[data-action="close-embed"]').click();
     const article = await context.newPage();
     // Hold the actual image fetch in the app, not the ordinary <img> download.
@@ -419,6 +445,7 @@ try {
     // The host page and app have different origins, as on a real blog.
     await article.goto(base.replace("127.0.0.1", "localhost") + "/image-article");
     await article.waitForFunction(() => document.querySelector("img")?.naturalWidth > 0);
+    await article.locator("iframe").waitFor({ state: "attached" });
     assert.equal(await article.locator("iframe").isVisible(), false);
     // A ready message from the wrong window must not reveal an unready app.
     await article.evaluate(() => window.postMessage("bn-viewer-ready", "*"));
@@ -501,20 +528,30 @@ try {
   imageEmbed = await editor.evaluate(() => window.copied);
   assert.match(imageEmbed, /uploaded.svg\?a=1&amp;b=2/);
   const uploaded = await context.newPage();
-  await uploaded.goto(base.replace("127.0.0.1", "localhost") + "/image-article");
-  await uploaded.locator("iframe").waitFor({ state: "visible" });
+  // Two embeds on one page each load the script; each gets one viewer.
+  await uploaded.goto(base.replace("127.0.0.1", "localhost") + "/image-article?twice");
+  for (const box of await uploaded.locator("[data-bn-embed]").all()) await box.locator("iframe").waitFor({ state: "visible" });
+  assert.deepEqual(await uploaded.locator("[data-bn-embed]").evaluateAll(boxes => boxes.map(box => box.querySelectorAll("iframe").length)), [1, 1]);
   assert.equal(await uploaded.frames()[1].locator("#viewer-title").textContent(), snapshotName);
   assert.match(await uploaded.frames()[1].locator("#evidence-bar").textContent(), /rain = yes/);
   assert.equal(await uploaded.frames()[1].locator('.node[data-node="1"] [data-state="0"] .pct').textContent(), "80.0%");
   await uploaded.close();
-  console.log("PASS new hosted image: dialog download → hosted SVG → URL entry → viewer retains Unicode title and evidence");
+  console.log("PASS new hosted image: dialog download → hosted SVG → URL entry → viewer retains Unicode title and evidence; two embeds on a page");
+  {
+    const legacy = await context.newPage();
+    await legacy.goto(base.replace("127.0.0.1", "localhost") + "/legacy-image-article");
+    await legacy.locator("iframe").waitFor({ state: "visible" });
+    assert.equal(await legacy.locator("a").evaluate(link => link.inert), true);
+    await legacy.close();
+    console.log("PASS embed code copied before js/embed.js: its inline script still swaps in the viewer");
+  }
 
   await editor.locator("#embed-image-source").selectOption("data");
   assert.equal(await editor.locator("#embed-image-url").isDisabled(), true);
   await editor.locator('[data-action="do-copy-embed"]').click();
   imageEmbed = await editor.evaluate(() => window.copied);
   assert.match(imageEmbed, /<img src="data:image\/svg\+xml;charset=utf-8,/);
-  assert.match(imageEmbed, /data-src="[^\"]+\?view&amp;image-first#net=/);
+  assert.match(imageEmbed, /data-bn-embed="[^\"]+\?view&amp;image-first#net=/);
   for (const [fail, reducedMotion] of [[false, false], [true, false], [false, true]]) {
     const article = await context.newPage();
     await article.emulateMedia({ reducedMotion: reducedMotion ? "reduce" : "no-preference" });

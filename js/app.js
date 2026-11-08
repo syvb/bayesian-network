@@ -2400,7 +2400,8 @@
 
   // HTML that embeds the viewer, optionally showing an image until ready. `theme` is "light",
   // "dark" or "" to follow the reader's system; `image` is an image URL, or {light, dark} URLs to
-  // pick from by the reader's system.
+  // pick from by the reader's system. An image-first embed declares only the viewer and its
+  // image; js/embed.js, loaded from here, does the rest, so it can change after the code is copied.
   function embedCode(url, image, height, theme) {
     const attr = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
     const color = (name) => (theme ? themeColor(theme, name) : `light-dark(${themeColor("light", name)}, ${themeColor("dark", name)})`);
@@ -2411,27 +2412,9 @@
     const img = typeof image === "object" && image
       ? `<picture style="display: block; height: 100%;"><source media="(prefers-color-scheme: dark)" srcset="${attr(image.dark)}"><img src="${attr(image.light)}" alt="${title}" style="${imgStyle}"></picture>`
       : `<img src="${attr(image)}" alt="${title}" style="${imgStyle}">`;
-    if (image) return `<div style="position: relative; height: ${height}px; background: ${color("--bg")}; ${frame} overflow: hidden;">
+    if (image) return `<div data-bn-embed="${attr(url)}" style="position: relative; height: ${height}px; background: ${color("--bg")}; ${frame} overflow: hidden;">
   <a href="${attr(url)}" target="_blank" rel="noopener" style="display: block; height: 100%;">${img}</a>
-  <iframe data-src="${attr(url)}" title="${title}" aria-hidden="true" tabindex="-1" style="position: absolute; inset: 0; width: 100%; height: 100%; border: 0; visibility: hidden;"></iframe>
-  <script>
-    (function () {
-      var box = document.currentScript.parentElement, frame = box.querySelector('iframe');
-      // A sandboxed page without allow-same-origin (a LessWrong widget) passes its sandbox to
-      // the frame, whose messages then come from the opaque origin "null".
-      var origin = window.origin === 'null' ? 'null' : new URL(frame.dataset.src).origin;
-      function ready(event) {
-        if (event.source !== frame.contentWindow || event.origin !== origin || event.data !== 'bn-viewer-ready') return;
-        box.querySelector('a').inert = true;
-        frame.style.visibility = 'visible';
-        frame.removeAttribute('aria-hidden');
-        frame.removeAttribute('tabindex');
-        window.removeEventListener('message', ready);
-      }
-      window.addEventListener('message', ready);
-      frame.src = frame.dataset.src;
-    })();
-  </script>
+  <script src="${attr(new URL("js/embed.js", url).href)}" async></script>
 </div>`;
     return `<iframe src="${attr(url)}" title="${title}" width="100%" height="${height}" style="${frame}" loading="lazy"></iframe>`;
   }
@@ -2932,6 +2915,8 @@
           fade.pause();
         }
         // Hidden cross-origin frames may not receive animation frames until they are visible.
+        // js/embed.js swaps the image for the viewer on this message, as does the inline script
+        // of embed code copied before it, which can't be updated: keep sending it.
         window.parent.postMessage("bn-viewer-ready", "*");
         // Announce readiness first, then begin the crossfade when the revealed frame can paint.
         if (fade) requestAnimationFrame(() => fade.play());
