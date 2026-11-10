@@ -2591,7 +2591,9 @@
     const attr = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
     const color = (name) => (theme ? themeColor(theme, name) : `light-dark(${themeColor("light", name)}, ${themeColor("dark", name)})`);
     // On a phone the chosen height can be taller than the screen; keep the whole viewer in view.
-    const frame = `color-scheme: ${theme || "light dark"}; border: 1px solid ${color("--border")}; border-radius: 8px; max-height: 85svh;`;
+    // Not a fraction of it: a LessWrong widget sizes its frame to fit its content, so there svh
+    // is the embed's own height plus margins, and a smaller cap shrinks it on every resize.
+    const frame = `color-scheme: ${theme || "light dark"}; border: 1px solid ${color("--border")}; border-radius: 8px; max-height: 100svh;`;
     const title = attr(net.name || "Bayesian network");
     const imgStyle = "display: block; width: 100%; height: 100%; object-fit: contain;";
     const img = typeof image === "object" && image

@@ -12,7 +12,7 @@ const { chromium } = createRequire(import.meta.url)("playwright");
 const code = P.exportPython(demos.find(d => d.id === "wet-grass").build());
 const hash = "#net=" + deflateRawSync(code).toString("base64url");
 const images = new Map();
-let imageEmbed = "";
+let imageEmbed = "", widgetEmbed = "";
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -43,10 +43,13 @@ const server = createServer(async (req, res) => {
     })();
   </script>
 </div>`);
-  } else if (url.pathname === "/widget-image-article") {
-    // Like a LessWrong widget: the embed code in a srcdoc frame sandboxed with only allow-scripts.
+  } else if (url.pathname === "/widget-article") {
+    // Like a LessWrong widget: the embed code in a srcdoc frame sandboxed with only allow-scripts,
+    // which starts 400px tall and then fits its body, measured by a script LessWrong appends.
+    const fit = `<script>new ResizeObserver(() => { const s = getComputedStyle(document.body); parent.postMessage(document.body.offsetHeight + parseFloat(s.marginTop) + parseFloat(s.marginBottom), "*"); }).observe(document.documentElement)</script>`;
     res.setHeader("Content-Type", "text/html");
-    res.end(`<iframe sandbox="allow-scripts" width="800" height="700" srcdoc="${imageEmbed.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"></iframe>`);
+    res.end(`<iframe sandbox="allow-scripts" width="800" height="400" srcdoc="${(widgetEmbed + fit).replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"></iframe>
+<script>addEventListener("message", e => { if (typeof e.data === "number") document.querySelector("iframe").height = e.data; })</script>`);
   } else if (images.has(url.pathname)) {
     res.setHeader("Content-Type", url.pathname.endsWith(".svg") ? "image/svg+xml" : "image/png");
     res.end(images.get(url.pathname));
@@ -615,10 +618,19 @@ try {
     await article.close();
     console.log(`PASS data URL: ${fail ? "app failure retains image" : reducedMotion ? "reduced motion skips fade" : "preview fades to hash viewer"}; no hosted image request, title and evidence retained`);
   }
+  // A LessWrong widget fits its frame to the embed, so the embed must keep its chosen height
+  // there, not shrink to a fraction of the frame's height on each resize.
+  const openWidget = async (embed) => {
+    widgetEmbed = embed;
+    const article = await context.newPage();
+    await article.goto(base.replace("127.0.0.1", "localhost") + "/widget-article");
+    const height = +embed.match(/height(?:: |=")(\d+)/)[1] + 2; // with its border
+    await article.frames()[1].waitForFunction(h => document.querySelector("[data-bn-embed], iframe").getBoundingClientRect().height === h, height, { timeout: 5000 });
+    return article;
+  };
   {
     // Inside an opaque-origin sandbox the viewer's ready message comes from "null", and still reveals it.
-    const article = await context.newPage();
-    await article.goto(base.replace("127.0.0.1", "localhost") + "/widget-image-article");
+    const article = await openWidget(imageEmbed);
     const widget = article.frameLocator("iframe");
     await widget.locator("iframe").waitFor({ state: "visible" });
     assert.equal(await widget.locator("a").evaluate(link => link.inert), true);
@@ -626,7 +638,7 @@ try {
     assert.equal(await frame.evaluate(() => window.origin), "null");
     assert.match(await frame.locator("#evidence-bar").textContent(), /rain = yes/);
     await article.close();
-    console.log("PASS data URL in a LessWrong-style widget: viewer replaces the image");
+    console.log("PASS data URL in a LessWrong-style widget: viewer replaces the image, at its chosen height");
   }
   // Themes: by default the embed follows the reader's system (both images, light-dark background);
   // a chosen theme is fixed for every reader.
@@ -649,7 +661,7 @@ try {
   }
   await editor.locator("#embed-theme").selectOption("");
   // never taller than the reader's screen (with the browser's toolbars showing)
-  assert.match(await editor.locator("#embed-code").inputValue(), /max-height: 85svh/);
+  assert.match(await editor.locator("#embed-code").inputValue(), /max-height: 100svh/);
   await editor.locator("#embed-page-scroll").check();
   assert.match(await editor.locator("#embed-code").inputValue(), /&amp;page-scroll/);
   await editor.locator("#embed-page-scroll").uncheck();
@@ -663,6 +675,8 @@ try {
   assert.equal(await editor.locator("#embed-image-url").inputValue(), base + "/uploaded.svg?a=1&b=2");
   await editor.locator("#embed-image").uncheck();
   assert.match(await editor.locator("#embed-code").inputValue(), /^<iframe /);
+  await (await openWidget(await editor.locator("#embed-code").inputValue())).close();
+  console.log("PASS plain embed in a LessWrong-style widget: keeps its chosen height");
   await editor.locator('[data-action="close-embed"]').click();
   // Seed the result of a Gist publish, without publishing anything to GitHub.
   const gistLink = base + "/?src=" + encodeURIComponent(base + "/network.py?revision=known");
