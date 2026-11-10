@@ -51,7 +51,8 @@ const server = createServer(async (req, res) => {
     res.setHeader("Content-Type", url.pathname.endsWith(".svg") ? "image/svg+xml" : "image/png");
     res.end(images.get(url.pathname));
   } else if (url.pathname === "/article") {
-    const src = url.searchParams.has("src") ? "?view&src=/network.py" : "?view" + hash;
+    const view = "?view" + (url.searchParams.has("cpts") ? "&cpts" : "");
+    const src = url.searchParams.has("src") ? view + "&src=/network.py" : view + hash;
     res.setHeader("Content-Type", "text/html");
     const sandbox = "allow-scripts allow-popups" + (url.searchParams.has("escape") ? " allow-popups-to-escape-sandbox" : "");
     res.end(`<iframe id="network" sandbox="${sandbox}" src="/${src}" width="800" height="600"></iframe>`);
@@ -320,6 +321,31 @@ try {
     assert.deepEqual(errors, []);
     console.log(`PASS ${source}: storage-blocked embed → full-page viewer; evidence retained after reload`);
     await context.close();
+  }
+
+  {
+    // ?cpts: every node shows its probability table, a row per combination of its parents'
+    // states, marked by the evidence; nodes spread apart to fit them, and hovering adds no table.
+    const page = await browser.newPage();
+    await page.goto(base + "/article?cpts");
+    const frame = page.frames()[1];
+    await frame.waitForFunction(() => document.querySelectorAll(".node .cpt").length === 4);
+    const wetRows = frame.locator('.node[data-node="4"] .cpt-row');
+    assert.deepEqual(await wetRows.allTextContents(), ["onyes99.0%", "no90.0%", "offyes90.0%", "no0%"]);
+    const boxes = await frame.locator(".node rect.body").evaluateAll(els => els.map(el => el.getBoundingClientRect().toJSON()));
+    for (const a of boxes) for (const b of boxes) {
+      if (a !== b) assert.ok(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top, "nodes overlap");
+    }
+    const wet = await frame.locator('.node[data-node="4"] rect.body').boundingBox();
+    await page.mouse.move(wet.x + wet.width / 2, wet.y + wet.height / 2, { steps: 4 });
+    await frame.waitForTimeout(100);
+    assert.equal(await frame.locator("#node-tip").isVisible(), false);
+    await frame.locator('.node[data-node="3"] [data-state="0"]').click();
+    assert.deepEqual(await frame.locator('.node[data-node="4"] .cpt-row.on').allTextContents(), ["onyes99.0%", "offyes90.0%"]);
+    // Full screen shows the tables too
+    await frame.waitForFunction(() => /[?&]cpts[&#]/.test(document.querySelector('[data-action="open-viewer"]').href));
+    await page.close();
+    console.log("PASS probability tables in nodes: rows follow the evidence, nodes don't overlap, no hover table, kept by Full screen");
   }
 
   {
@@ -628,6 +654,10 @@ try {
   assert.match(await editor.locator("#embed-code").inputValue(), /&amp;page-scroll/);
   await editor.locator("#embed-page-scroll").uncheck();
   assert.doesNotMatch(await editor.locator("#embed-code").inputValue(), /page-scroll/);
+  await editor.locator("#embed-cpts").check();
+  assert.match(await editor.locator("#embed-code").inputValue(), /&amp;cpts/);
+  await editor.locator("#embed-cpts").uncheck();
+  assert.doesNotMatch(await editor.locator("#embed-code").inputValue(), /cpts/);
   console.log("PASS themes: reader's system by default (both images), or a fixed light or dark theme");
   await editor.locator("#embed-image-source").selectOption("url");
   assert.equal(await editor.locator("#embed-image-url").inputValue(), base + "/uploaded.svg?a=1&b=2");

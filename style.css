@@ -716,6 +716,18 @@ body.viewer-loading #canvas-wrap { visibility: hidden; }
 .tip-cpt tr.off .num { color: var(--muted); }
 .tip-legend { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 6px; font-size: 11px; color: var(--muted); }
 .tip-legend i { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 2px; }
+/* The same tables inside the nodes, for viewers that show them (?cpts; js/app.js, cptSvg) */
+.node .cpt-panel { fill: color-mix(in srgb, var(--text) 5%, var(--node)); }
+.node .cpt-rule { stroke: var(--border); stroke-width: 1; }
+.node .cpt .pbar-bg { fill: var(--node); }
+.node .cpt-note, .node .cpt-par { font-size: 11px; fill: var(--muted); }
+.node .cpt-head { font-size: 11px; font-weight: 600; }
+.node .cpt-par.observed { fill: var(--observed); font-weight: 600; }
+.node .cpt-par.intervened { fill: var(--intervened); font-weight: 600; }
+.node .cpt-hl { fill: color-mix(in srgb, var(--observed) 10%, transparent); }
+.node .cpt-row.do .cpt-hl { fill: color-mix(in srgb, var(--intervened) 10%, transparent); }
+.node .cpt-row.off .cpt-fill, .node .cpt-row.off .seg { opacity: 0.3; }
+.node .seg-label { font-size: 10px; font-weight: 600; }
 #node-sheet .sheet-cpt { margin-top: 8px; font-size: 14px; }
 #node-sheet .sheet-cpt summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
 #node-sheet .tip-cpt { font-size: 13px; }

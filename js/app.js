@@ -30,6 +30,9 @@
   // viewer instead of zooming or panning it. Pinch (or Ctrl+scroll) still zooms.
   const pageScroll = viewer && new URLSearchParams(location.search).has("page-scroll");
   if (pageScroll) document.documentElement.classList.add("page-scroll");
+  // ?cpts (an embed option): every node shows its probability table under its probabilities,
+  // for explaining how the network works.
+  let showCpts = viewer && new URLSearchParams(location.search).has("cpts");
   // Viewers are independent of browser storage, including in opaque-origin sandboxed frames.
   // Settings a reader changes in the viewer are remembered here, and kept if they open the editor.
   const viewerChoices = new Set();
@@ -865,14 +868,40 @@
   function labelWidth(n) {
     return Math.min(PROB_LABEL_MAX, Math.max(...n.labels.map((l) => Math.ceil(textWidth(l, "12px system-ui, sans-serif")))));
   }
-  function nodeSize(n, probs = showProbs) {
+  // With `tables`, the node's probability table goes under its probabilities, and `table` is its
+  // layout (cptLayout).
+  function nodeSize(n, probs = showProbs, tables = showCpts) {
     const extra = (nameLines(n.name).length - 1) * NAME_LH;
     if (!probs) return { w: nodeWidth(n), h: NODE_H + extra };
-    return {
-      w: Math.max(nodeWidth(n), 10 + labelWidth(n) + 8 + PROB_BAR + PROB_PCT + 6),
-      h: PROB_HEAD + extra + n.labels.length * PROB_ROW + 8,
-    };
+    const w = Math.max(nodeWidth(n), 10 + labelWidth(n) + 8 + PROB_BAR + PROB_PCT + 6);
+    const h = PROB_HEAD + extra + n.labels.length * PROB_ROW + 8;
+    if (!tables) return { w, h };
+    const table = cptLayout(n, w);
+    return { w: table.w, h: h + table.h, table };
   }
+
+  // Each node's box as drawn: id -> {x, y, w, h, table}. Tables make nodes much bigger than the
+  // layout was made for, so with them the drawing spreads the layout out, keeping its shape, by
+  // the least factor (at most 4) that keeps every two nodes CPT_GAP apart. The network keeps its
+  // own coordinates.
+  const CPT_GAP = 36;
+  function layout(probs = showProbs, tables = showCpts) {
+    const boxes = new Map(net.nodes.map((n) => [n.id, { x: n.x, y: n.y, ...nodeSize(n, probs, tables) }]));
+    if (!probs || !tables) return boxes;
+    const list = [...boxes.values()];
+    let s = 1;
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i], b = list[j];
+        const need = Math.min(((a.w + b.w) / 2 + CPT_GAP) / Math.abs(a.x - b.x), ((a.h + b.h) / 2 + CPT_GAP) / Math.abs(a.y - b.y));
+        if (need > s && need < Infinity) s = need; // nodes on the same spot stay overlapping
+      }
+    }
+    s = Math.min(s, 4);
+    for (const b of list) { b.x *= s; b.y *= s; }
+    return boxes;
+  }
+  let drawn = new Map(); // layout() as last rendered
   function truncate(text, font, maxW) {
     if (textWidth(text, font) <= maxW) return text;
     while (text.length > 1 && textWidth(text + "…", font) > maxW) text = text.slice(0, -1);
@@ -897,10 +926,9 @@
     if (!net.nodes.length) { view = { x: 0, y: 0, k: 1 }; applyView(); return; }
     const r = svg.getBoundingClientRect();
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const n of net.nodes) {
-      const { w, h } = nodeSize(n);
-      x0 = Math.min(x0, n.x - w / 2); x1 = Math.max(x1, n.x + w / 2);
-      y0 = Math.min(y0, n.y - h / 2); y1 = Math.max(y1, n.y + h / 2 + 10);
+    for (const { x, y, w, h } of layout().values()) {
+      x0 = Math.min(x0, x - w / 2); x1 = Math.max(x1, x + w / 2);
+      y0 = Math.min(y0, y - h / 2); y1 = Math.max(y1, y + h / 2 + 10);
     }
     const pad = 24; // leave room for the evidence bar, with half a pad below it
     const top = evidenceBar.hidden ? 0 : evidenceBar.getBoundingClientRect().bottom - r.top - pad / 2;
@@ -935,12 +963,12 @@
   function render() {
     if (viewer) { prepareLinks(); updateReset(); }
     const parts = [];
-    const widths = new Map(net.nodes.map((n) => [n.id, nodeSize(n)]));
+    const boxes = drawn = layout();
     const inf = showProbs ? inference() : null;
     for (const a of net.arcs) {
-      const f = M.getNode(net, a.from), t = M.getNode(net, a.to);
-      const p1 = boxExit(f, widths.get(f.id), t.x, t.y, 0);
-      const p2 = boxExit(t, widths.get(t.id), f.x, f.y, 2);
+      const f = boxes.get(a.from), t = boxes.get(a.to);
+      const p1 = boxExit(f, f, t.x, t.y, 0);
+      const p2 = boxExit(t, t, f.x, f.y, 2);
       const sel = selArc && selArc.from === a.from && selArc.to === a.to;
       const d = `M${p1.x},${p1.y} L${p2.x},${p2.y}`;
       const cut = inf && isDo(evidenceIndices().get(a.to));
@@ -949,7 +977,7 @@
       parts.push(`<g class="arc${sel ? " selected" : ""}${near ? " near" : ""}${cut ? " cut" : ""}" data-from="${a.from}" data-to="${a.to}"><path class="hit" d="${d}"/><path class="line" d="${d}" marker-end="url(#${sel ? "arrow-sel" : near ? "arrow-near" : "arrow"})"/></g>`);
     }
     for (const n of net.nodes) {
-      const { w, h } = widths.get(n.id);
+      const box = boxes.get(n.id), { w, h, table } = box;
       const classes = ["node"];
       if (selNodes.has(n.id)) classes.push("selected");
       if (drag && drag.mode === "arc" && drag.target === n.id) classes.push("target");
@@ -973,7 +1001,8 @@
               `<rect class="pbar-bg" x="${barX}" y="${y + 4}" width="${barW}" height="10" rx="2"/>` +
               (p ? `<rect class="pbar" x="${barX}" y="${y + 4}" width="${barW * p}" height="10" rx="2"/>` : "") +
               `<text class="pct" x="${w / 2 - 8}" y="${y + 13}" text-anchor="end">${pct}</text></g>`;
-          }).join("");
+          }).join("") +
+          (table ? cptSvg(n, w, -h / 2 + head + n.labels.length * PROB_ROW + 4, table) : "");
       } else {
         const lines = nameLines(n.name).length;
         content = nameSvg(n, -3 - (lines - 1) * NAME_LH / 2) +
@@ -981,7 +1010,7 @@
       }
       const tip = showProbs ? "\n" + clickHint() : "";
       parts.push(
-        `<g class="${classes.join(" ")}" data-node="${n.id}" transform="translate(${n.x},${n.y})">` +
+        `<g class="${classes.join(" ")}" data-node="${n.id}" transform="translate(${box.x},${box.y})">` +
           // A node with a description gets the hover card instead of the browser's slower tooltip.
           (n.description ? "" : `<title>${esc(n.name)}\n${esc(n.labels.join(", "))}${bad ? "\nCPT rows do not sum to 1" : ""}${tip}</title>`) +
           `<rect class="body" x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}" rx="9"/>` +
@@ -994,10 +1023,10 @@
       );
     }
     if (drag && drag.mode === "arc" && drag.moved) {
-      const f = M.getNode(net, drag.from);
-      const t = drag.target ? M.getNode(net, drag.target) : null;
-      const p2 = t ? boxExit(t, widths.get(t.id), f.x, f.y, 2) : drag.pos;
-      const p1 = boxExit(f, widths.get(f.id), p2.x, p2.y, 0);
+      const f = boxes.get(drag.from);
+      const t = drag.target ? boxes.get(drag.target) : null;
+      const p2 = t ? boxExit(t, t, f.x, f.y, 2) : drag.pos;
+      const p1 = boxExit(f, f, p2.x, p2.y, 0);
       parts.push(`<path class="ghost" d="M${p1.x},${p1.y} L${p2.x},${p2.y}" marker-end="url(#arrow-sel)"/>`);
     }
     if (drag && drag.mode === "rubber") {
@@ -1307,14 +1336,14 @@
 
   function positionSoftEditor() {
     if (softId === null) return;
-    const n = M.getNode(net, softId);
-    if (!n || !showProbs) { hideSoftEditor(); return; }
-    const { w, h } = nodeSize(n);
+    const n = M.getNode(net, softId), box = drawn.get(softId);
+    if (!n || !box || !showProbs) { hideSoftEditor(); return; }
+    const { w, h } = box;
     const wrap = $("#canvas-wrap").getBoundingClientRect();
     const ew = softEditor.offsetWidth, eh = softEditor.offsetHeight;
     // A node that's off screen (opened from its watch card) gets the editor next to the card.
-    const sx0 = view.x + (n.x - w / 2) * view.k, sx1 = view.x + (n.x + w / 2) * view.k;
-    const sy0 = view.y + (n.y - h / 2) * view.k, sy1 = view.y + (n.y + h / 2) * view.k;
+    const sx0 = view.x + (box.x - w / 2) * view.k, sx1 = view.x + (box.x + w / 2) * view.k;
+    const sy0 = view.y + (box.y - h / 2) * view.k, sy1 = view.y + (box.y + h / 2) * view.k;
     const card = watchPanel.querySelector(`[data-watch="${n.id}"]`);
     if (card && (sx1 < 0 || sx0 > wrap.width || sy1 < 0 || sy0 > wrap.height)) {
       const r = card.getBoundingClientRect();
@@ -1322,9 +1351,9 @@
       softEditor.style.top = Math.max(8, Math.min(wrap.height - eh - 8, r.top - wrap.top)) + "px";
       return;
     }
-    let x = view.x + (n.x + w / 2) * view.k + 10;
-    if (x + ew > wrap.width - 8) x = view.x + (n.x - w / 2) * view.k - ew - 10;
-    const y = view.y + (n.y - h / 2) * view.k;
+    let x = view.x + (box.x + w / 2) * view.k + 10;
+    if (x + ew > wrap.width - 8) x = view.x + (box.x - w / 2) * view.k - ew - 10;
+    const y = view.y + (box.y - h / 2) * view.k;
     softEditor.style.left = Math.max(8, Math.min(wrap.width - ew - 8, x)) + "px";
     softEditor.style.top = Math.max(8, Math.min(wrap.height - eh - 8, y)) + "px";
   }
@@ -1469,11 +1498,12 @@
   // other node's bar has a segment per state, in the CPT editor's colours. A parent's state shows
   // once per group of rows, and a group whose rows are all equal is one row, "any" for the other
   // parents. Rows that observed or intervened parents rule out fade, and when there are more than
-  // TIP_ROWS rows, only those that match are listed.
+  // TIP_ROWS rows, only those that match are listed. The hover card shows it as HTML (compactCpt),
+  // and with the tables shown, each node as SVG (cptSvg); cptRowsView has what they share.
   const TIP_ROWS = 12;
-  function compactCpt(n) {
+  function cptRowsView(n) {
     const { parents, rows } = M.cptRows(net, n.id);
-    const k = n.labels.length, t = M.trueState(n.labels), colors = BNCptEditor.stateColors(n.labels);
+    const k = n.labels.length;
     const list = [];
     for (let i = 0, j; i < rows.length; i = j) {
       for (j = i + 1; parents.length > 1 && j < rows.length && rows[j].idx[0] === rows[i].idx[0];) j++;
@@ -1490,28 +1520,122 @@
     const anyKnown = known.some(Boolean);
     const matching = anyKnown && list.length > TIP_ROWS ? list.filter(fits) : list;
     const shown = matching.slice(0, TIP_ROWS);
-
+    const hidden = list.length - shown.length;
+    return {
+      parents, k, t: M.trueState(n.labels), colors: BNCptEditor.stateColors(n.labels), list, shown, known, anyKnown,
+      // rows a faded bar is drawn for
+      off: (r) => anyKnown && !fits(r),
+      // whether the row starts a group of rows for a state of the first parent
+      fresh: (i) => !i || shown[i - 1].idx[0] !== shown[i].idx[0],
+      more: !hidden ? "" : shown.length === matching.length ? `…and ${hidden} rows that don't match the evidence` : `…and ${hidden} more rows`,
+      // with only interventions on its parents, matching rows take the intervention colour
+      tint: anyKnown && known.every((e) => !e || e.kind === "intervened"),
+    };
+  }
+  function compactCpt(n) {
+    const { parents, k, t, colors, shown, known, anyKnown, off, fresh, more, tint } = cptRowsView(n);
     // A segment's label is shortened to fit by fitCptTables, so it keeps the short one in data-short.
     const bar = (v, faded) => k === 2
       ? `<span class="tip-bar"><span class="track"><span class="fill" style="width:${v[t] * 100}%"></span></span><span class="num">${pctText(v[t], v)}</span></span>`
       : `<span class="tip-bar"><span class="stack">${v.map((p, s) => !(p > 0) ? "" : `<span class="seg" style="width:${p * 100}%;background:${colors[s][0]};color:${colors[s][1]}"` +
           (faded ? "></span>" : ` data-short="${esc(pctText(p, v))}"><span>${esc(n.labels[s])}${p === 1 ? "" : " · " + esc(pctText(p, v))}</span></span>`)).join("")}</span></span>`;
     const body = shown.map((r, i) => {
-      const fresh = !i || shown[i - 1].idx[0] !== r.idx[0];
-      const cls = [parents.length > 1 && fresh && i && "group", anyKnown && (fits(r) ? "on" : "off")].filter(Boolean).join(" ");
-      const cells = r.idx.map((s, q) => q === 0 && !fresh ? `<td class="par"></td>`
+      const cls = [parents.length > 1 && fresh(i) && i && "group", anyKnown && (off(r) ? "off" : "on")].filter(Boolean).join(" ");
+      const cells = r.idx.map((s, q) => q === 0 && !fresh(i) ? `<td class="par"></td>`
         : s === null ? `<td class="par any">any</td>`
         : `<td class="par${known[q] && known[q].s === s ? " " + known[q].kind : ""}">${esc(parents[q].labels[s])}</td>`).join("");
-      return `<tr${cls ? ` class="${cls}"` : ""}>${cells}<td class="bar-cell">${bar(r.v, anyKnown && !fits(r))}</td></tr>`;
+      return `<tr${cls ? ` class="${cls}"` : ""}>${cells}<td class="bar-cell">${bar(r.v, off(r))}</td></tr>`;
     }).join("");
     const head = parents.length || k === 2 ? `<thead><tr>${parents.map((p) => `<th class="par">${esc(p.name)}</th>`).join("")}<th>${k === 2 ? `P(${esc(n.labels[t])})` : ""}</th></tr></thead>` : "";
     const legend = k === 2 ? "" : `<div class="tip-legend">${n.labels.map((l, s) => `<span><i style="background:${colors[s][0]}"></i>${esc(l)}</span>`).join("")}</div>`;
-    const hidden = list.length - shown.length;
-    const more = !hidden ? "" : shown.length === matching.length ? `<p class="muted">…and ${hidden} rows that don't match the evidence</p>` : `<p class="muted">…and ${hidden} more rows</p>`;
     const gate = n.gate ? `<p class="muted">${n.gate.toUpperCase()} of its parents</p>` : "";
-    // with only interventions on its parents, matching rows take the intervention colour
-    const tint = anyKnown && known.every((e) => !e || e.kind === "intervened") ? " do" : "";
-    return gate + legend + `<table class="tip-cpt${tint}">${head}<tbody>${body}</tbody></table>` + more;
+    return gate + legend + `<table class="tip-cpt${tint ? " do" : ""}">${head}<tbody>${body}</tbody></table>` + (more ? `<p class="muted">${more}</p>` : "");
+  }
+
+  // The table's layout in a node (nodeSize) when the tables are shown: a column per parent, then
+  // the bars, at least as wide as the node's probabilities. Its size doesn't depend on the
+  // evidence, so nodes keep their size while readers set it.
+  const CPT_ROW = 18, CPT_LINE = 15, CPT_COL_MAX = 100, CPT_LEGEND_MAX = 120;
+  const CPT_FONT = "11px system-ui, sans-serif", CPT_HEAD_FONT = "600 11px system-ui, sans-serif", CPT_SEG_FONT = "600 10px system-ui, sans-serif";
+  function cptLayout(n, minW) {
+    const rows = cptRowsView(n), { parents, k, list } = rows;
+    const cols = parents.map((p, q) => Math.min(CPT_COL_MAX, Math.ceil(Math.max(textWidth(p.name, CPT_HEAD_FONT),
+      ...p.labels.map((l) => textWidth(l, CPT_FONT)), q ? textWidth("any", "italic " + CPT_FONT) : 0))));
+    const barMin = k === 2 ? PROB_BAR + 6 + PROB_PCT : 150;
+    const w = Math.max(minW, 10 + cols.reduce((a, c) => a + c + 8, 0) + barMin + 8);
+    // a swatch per state, wrapping onto as many lines as the node's width needs
+    const legend = [];
+    if (k > 2) {
+      let x = 0, line = 0;
+      for (const l of n.labels) {
+        const label = truncate(l, CPT_FONT, CPT_LEGEND_MAX), iw = 12 + textWidth(label, CPT_FONT);
+        if (x && x + iw > w - 20) { x = 0; line++; }
+        legend.push({ x, line, label });
+        x += iw + 10;
+      }
+    }
+    const lines = (n.gate ? 1 : 0) + (legend.length ? legend[legend.length - 1].line + 1 : 0) + (list.length > TIP_ROWS ? 1 : 0);
+    const head = parents.length > 0 || k === 2;
+    return { rows, cols, legend, head, w, h: 8 + lines * CPT_LINE + ((head ? 1 : 0) + Math.min(list.length, TIP_ROWS)) * CPT_ROW + 2 };
+  }
+
+  // The table in a node w wide, from `top` to the node's bottom, with the layout cptLayout made.
+  // It sits on a panel of its own, with the CPT editor's colours, so it doesn't read as more of
+  // the node's probabilities.
+  function cptSvg(n, w, top, { rows, cols, legend, head, h }) {
+    const { parents, k, t, colors, shown, known, anyKnown, off, fresh, more, tint } = rows;
+    const x0 = -w / 2 + 10, right = w / 2 - 8, colX = [];
+    let barX = x0;
+    for (const c of cols) { colX.push(barX); barX += c + 8; }
+    const trackW = right - PROB_PCT + 2 - barX, stackW = right - barX;
+    const text = (x, y, s, cls, attrs = "") => `<text class="${cls}" x="${x}" y="${y}"${attrs}>${esc(s)}</text>`;
+    // inside the node's border (at its widest, selected or observed) and its rounded corners
+    const i = 1.25, r = 9 - i, l = -w / 2 + i, rt = w / 2 - i, bottom = top + h + 4 - i;
+    let y = top + 6;
+    let out = `<g class="cpt"><path class="cpt-panel" d="M${l},${top} H${rt} V${bottom - r} A${r},${r} 0 0 1 ${rt - r},${bottom} H${l + r} A${r},${r} 0 0 1 ${l},${bottom - r} Z"/>` +
+      `<line class="cpt-rule" x1="${l}" x2="${rt}" y1="${top}" y2="${top}"/>`;
+    if (n.gate) { out += text(x0, y + 11, `${n.gate.toUpperCase()} of its parents`, "cpt-note"); y += CPT_LINE; }
+    for (const [s, item] of legend.entries()) {
+      const ly = y + item.line * CPT_LINE;
+      out += `<rect x="${x0 + item.x}" y="${ly + 3}" width="8" height="8" rx="2" fill="${colors[s][0]}"/>` + text(x0 + item.x + 12, ly + 11, item.label, "cpt-note");
+    }
+    if (legend.length) y += (legend[legend.length - 1].line + 1) * CPT_LINE;
+    if (head) {
+      out += parents.map((p, q) => text(colX[q], y + 13, truncate(p.name, CPT_HEAD_FONT, cols[q]), "cpt-par cpt-head")).join("") +
+        (k === 2 ? text(barX, y + 13, truncate(`P(${n.labels[t]})`, CPT_HEAD_FONT, stackW), "cpt-head") : "");
+      y += CPT_ROW;
+    }
+    shown.forEach((r, i) => {
+      const faded = off(r);
+      out += `<g class="cpt-row${anyKnown ? (faded ? " off" : tint ? " on do" : " on") : ""}">`;
+      if (anyKnown && !faded) out += `<rect class="cpt-hl" x="${-w / 2 + 4}" y="${y}" width="${w - 8}" height="${CPT_ROW}" rx="3"/>`;
+      if (parents.length > 1 && fresh(i) && i) out += `<line class="cpt-rule" x1="${x0 - 4}" x2="${right + 4}" y1="${y}" y2="${y}"/>`;
+      out += r.idx.map((s, q) => q === 0 && !fresh(i) ? ""
+        // an attribute, not CSS, so that exported images keep it
+        : s === null ? text(colX[q], y + 13, "any", "cpt-par", ` font-style="italic"`)
+        : text(colX[q], y + 13, truncate(parents[q].labels[s], CPT_FONT, cols[q]), "cpt-par" + (known[q] && known[q].s === s ? " " + known[q].kind : ""))).join("");
+      const v = r.v;
+      if (k === 2) {
+        out += `<rect class="pbar-bg" x="${barX}" y="${y + 4}" width="${trackW}" height="10" rx="2"/>` +
+          (v[t] > 0 ? `<rect class="cpt-fill" x="${barX}" y="${y + 4}" width="${trackW * v[t]}" height="10" rx="2" fill="${colors[t][0]}"/>` : "") +
+          text(w / 2 - 8, y + 13, pctText(v[t], v), "pct", ` text-anchor="end"`);
+      } else {
+        // each segment is labelled "state · 25%", or where that doesn't fit "25%", or else nothing
+        let x = barX;
+        for (const [s, p] of v.entries()) {
+          if (!(p > 0)) continue;
+          const sw = stackW * p, pct = pctText(p, v);
+          const label = faded ? "" : [p === 1 ? n.labels[s] : `${n.labels[s]} · ${pct}`, pct].find((l) => textWidth(l, CPT_SEG_FONT) + 6 <= sw) || "";
+          out += `<rect class="seg" x="${x}" y="${y + 2}" width="${sw}" height="14" fill="${colors[s][0]}"><title>${esc(n.labels[s])}: ${pct}</title></rect>` +
+            (label ? `<text class="seg-label" x="${x + sw / 2}" y="${y + 12.5}" text-anchor="middle" style="fill:${colors[s][1]}">${esc(label)}</text>` : "");
+          x += sw;
+        }
+      }
+      out += `</g>`;
+      y += CPT_ROW;
+    });
+    if (more) out += text(x0, top + h - 8, more, "cpt-note"); // on the last line, whatever the rows above
+    return out + `</g>`;
   }
   // Fits the probability tables in `root` to their card, once they're laid out: parents' names
   // and states wrap only when the table is too wide for them on one line, and a stacked bar's
@@ -1529,24 +1653,25 @@
   }
 
   // Hovering a node that has a description shows it in a card under the node. In the viewer,
-  // every node gets one, with its probability table.
+  // every node gets one, with its probability table, unless the tables are shown in the nodes.
   const nodeTip = $("#node-tip");
   let tipId = null;
   function showNodeTip(id) {
-    const n = id === null ? null : M.getNode(net, id);
-    if (!n || !(n.description || viewer) || drag) { nodeTip.hidden = true; tipId = null; return; }
+    const n = id === null ? null : M.getNode(net, id), box = drawn.get(id);
+    const table = viewer && !showCpts;
+    if (!n || !box || !(n.description || table) || drag) { nodeTip.hidden = true; tipId = null; return; }
     nodeTip.hidden = false;
     if (tipId !== id) {
       const hint = showProbs ? clickHint() : "";
-      nodeTip.classList.toggle("with-cpt", viewer);
-      nodeTip.innerHTML = `<b>${esc(n.name)}</b>` + (n.description ? `<p>${esc(n.description)}</p>` : "") + (viewer ? compactCpt(n) : "") + (M.badRows(n).length ? `<p class="warn">CPT rows do not sum to 1</p>` : "") + (hint ? `<p class="muted">${hint}</p>` : "");
+      nodeTip.classList.toggle("with-cpt", table);
+      nodeTip.innerHTML = `<b>${esc(n.name)}</b>` + (n.description ? `<p>${esc(n.description)}</p>` : "") + (table ? compactCpt(n) : "") + (M.badRows(n).length ? `<p class="warn">CPT rows do not sum to 1</p>` : "") + (hint ? `<p class="muted">${hint}</p>` : "");
       fitCptTables(nodeTip);
       tipId = id;
     }
-    const { h } = nodeSize(n), wrapW = svg.clientWidth, tw = nodeTip.offsetWidth, th = nodeTip.offsetHeight;
-    const cx = view.x + n.x * view.k;
-    let top = view.y + (n.y + h / 2) * view.k + 8;
-    if (top + th > svg.clientHeight - 4) top = view.y + (n.y - h / 2) * view.k - th - 8;
+    const { h } = box, wrapW = svg.clientWidth, tw = nodeTip.offsetWidth, th = nodeTip.offsetHeight;
+    const cx = view.x + box.x * view.k;
+    let top = view.y + (box.y + h / 2) * view.k + 8;
+    if (top + th > svg.clientHeight - 4) top = view.y + (box.y - h / 2) * view.k - th - 8;
     nodeTip.style.left = Math.max(4, Math.min(wrapW - tw - 4, cx - tw / 2)) + "px";
     nodeTip.style.top = Math.max(4, top) + "px";
   }
@@ -2238,11 +2363,17 @@
     if (theme) { root.classList.remove("theme-light", "theme-dark"); root.classList.add("theme-" + theme); }
     try { return fn(); } finally { root.className = was; }
   }
+  // Runs fn with the probability tables in the nodes shown or not, for an embed's image.
+  function withTables(on, fn) {
+    if (on === showCpts) return fn();
+    showCpts = on;
+    try { return fn(); } finally { showCpts = !on; render(); }
+  }
   const themeColor = (theme, name) => withTheme(theme, () => getComputedStyle(document.documentElement).getPropertyValue(name).trim());
 
-  async function downloadImage(kind, theme = "") {
+  async function downloadImage(kind, theme = "", tables = false) {
     if (!net.nodes.length) { toast("The network is empty"); return; }
-    const { image, code } = withTheme(theme, exportImage);
+    const { image, code } = withTables(tables, () => withTheme(theme, exportImage));
     if (kind === "svg") download(new Blob([image.svg], { type: "image/svg+xml" }), fileName(".svg"));
     else download(await BNImage.svgToPng(image, code), fileName(".png"));
   }
@@ -2391,10 +2522,12 @@
   const fromBase64Url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
   const pipe = async (bytes, stream) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
 
-  // A link with the current network (and evidence) in its hash; ?view opens it in the viewer.
+  // ?view opens a link in the viewer, which passes on its fixed theme and shown tables.
+  const viewQuery = () => "?view" + (forcedTheme ? "&theme=" + forcedTheme : "") + (showCpts ? "&cpts" : "");
+  // A link with the current network (and evidence) in its hash.
   async function netLink(asViewer, code = exportCode()) {
     const packed = await pipe(new TextEncoder().encode(code), new CompressionStream("deflate-raw"));
-    return location.href.replace(/[?#].*$/, "") + (asViewer ? "?view" + (forcedTheme ? "&theme=" + forcedTheme : "") : "") + "#net=" + toBase64Url(packed);
+    return location.href.replace(/[?#].*$/, "") + (asViewer ? viewQuery() : "") + "#net=" + toBase64Url(packed);
   }
 
   // Opens the network in a new tab. Popup blockers (Safari, in a sandboxed embed) allow
@@ -2410,7 +2543,7 @@
       const code = exportCode(), key = linksKey();
       if (readyLinks?.key === key) return;
       const src = new URLSearchParams(location.search).get("src");
-      const srcLink = (asViewer) => location.href.replace(/[?#].*$/, "") + (asViewer ? "?view" + (forcedTheme ? "&theme=" + forcedTheme : "") + "&" : "?") + "src=" + encodeURIComponent(src);
+      const srcLink = (asViewer) => location.href.replace(/[?#].*$/, "") + (asViewer ? viewQuery() + "&" : "?") + "src=" + encodeURIComponent(src);
       const links = src && code === initialState?.code
         ? { key, viewer: srcLink(true), editor: srcLink(false) }
         : { key, viewer: await netLink(true, code), editor: await netLink(false, code) };
@@ -2439,13 +2572,13 @@
       : `${hint[0].toUpperCase() + hint.slice(1)} to open it in a new tab.`, 6000);
   }
 
-  // At about 800px wide, sized to the network's shape, plus title and evidence bars.
-  function embedHeight() {
+  // At about 800px wide, sized to the network's shape (with or without the tables in its
+  // nodes), plus title and evidence bars.
+  function embedHeight(tables) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const n of net.nodes) {
-      const { w, h } = nodeSize(n, true);
-      x0 = Math.min(x0, n.x - w / 2); x1 = Math.max(x1, n.x + w / 2);
-      y0 = Math.min(y0, n.y - h / 2); y1 = Math.max(y1, n.y + h / 2);
+    for (const { x, y, w, h } of layout(true, tables).values()) {
+      x0 = Math.min(x0, x - w / 2); x1 = Math.max(x1, x + w / 2);
+      y0 = Math.min(y0, y - h / 2); y1 = Math.max(y1, y + h / 2);
     }
     return Math.round(Math.max(360, Math.min(900, 800 * (y1 - y0) / Math.max(1, x1 - x0) + 140)));
   }
@@ -2476,7 +2609,7 @@
     if (!net.nodes.length) { toast("The network is empty"); return; }
     embedUrl = url || await netLink(true);
     embedImageData = {};
-    $("#embed-height").value = embedHeight();
+    $("#embed-height").value = embedHeight($("#embed-cpts").checked);
     $("#embed-image").checked = false;
     $("#embed-image-source").value = "url";
     $("#embed-image-url").value = !url && unsaved && linkedImage?.netId === netId ? linkedImage.url : "";
@@ -2484,8 +2617,12 @@
     $("#embed-dialog").showModal();
   }
 
-  // A data: URL of the canvas as an SVG in the light or dark theme, made once per dialog.
-  const embedImage = (theme) => (embedImageData[theme] ??= "data:image/svg+xml;charset=utf-8," + encodeURIComponent(withTheme(theme, exportImage).image.svg));
+  // A data: URL of the canvas as an SVG in the light or dark theme, with the tables in the nodes
+  // if the embed shows them, made once per dialog.
+  const embedImage = (theme) => {
+    const tables = $("#embed-cpts").checked;
+    return (embedImageData[theme + tables] ??= "data:image/svg+xml;charset=utf-8," + encodeURIComponent(withTables(tables, () => withTheme(theme, exportImage)).image.svg));
+  };
 
   function updateEmbedCode() {
     const showImage = $("#embed-image").checked;
@@ -2516,10 +2653,17 @@
     if (image) url.search += "&image-first";
     if (theme) url.search += "&theme=" + theme;
     if ($("#embed-page-scroll").checked) url.search += "&page-scroll";
+    if ($("#embed-cpts").checked) url.search += "&cpts";
     $("#embed-code").value = valid ? embedCode(url.href, image, +$("#embed-height").value, theme) : "";
   }
   $("#embed-theme").addEventListener("change", updateEmbedCode);
   $("#embed-page-scroll").addEventListener("change", updateEmbedCode);
+  $("#embed-cpts").addEventListener("change", () => {
+    // the tables make the network taller: a height still at the default follows them
+    const tables = $("#embed-cpts").checked, height = $("#embed-height");
+    if (+height.value === embedHeight(!tables)) height.value = embedHeight(tables);
+    updateEmbedCode();
+  });
   $("#embed-height").addEventListener("input", updateEmbedCode);
   $("#embed-image").addEventListener("change", updateEmbedCode);
   $("#embed-image-source").addEventListener("change", updateEmbedCode);
@@ -2759,7 +2903,7 @@
       openEmbed();
     },
     "do-copy-embed": copyEmbed,
-    "embed-download-image": () => downloadImage("svg", $("#embed-theme").value),
+    "embed-download-image": () => downloadImage("svg", $("#embed-theme").value, $("#embed-cpts").checked),
     "close-embed": () => $("#embed-dialog").close(),
     "gist-copy-embed": () => openEmbed($("#gist-link").value.replace("?src=", "?view&src=")),
     "open-viewer": () => openLink(true),
@@ -3009,6 +3153,9 @@
     // the editor follows your system's theme, not the one an embed chose
     url.searchParams.delete("theme");
     if (forcedTheme) { document.documentElement.classList.remove("theme-" + forcedTheme); forcedTheme = undefined; }
+    // and shows the nodes at their usual size, to edit
+    url.searchParams.delete("cpts");
+    showCpts = false;
     history.replaceState(null, "", url.href.replace("?#", "#").replace(/\?$/, ""));
     if (viewerEvidenceChanged) saveEvidence();
     render();
