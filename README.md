@@ -78,7 +78,7 @@ bn.cpt("wet grass")[{"sprinkler": "off", "rain": "no"}] = [0, 1]
 **Image-first embeds:** enable **Show image while loading** in the embed dialog to show an image immediately, then replace it with the interactive viewer only after the network has been imported and rendered. This works for any network, with two image sources:
 
 - **Hosted image URL:** use an existing exported PNG/SVG, or click **Download SVG**, upload it unchanged to a host that allows cross-origin downloads (CORS), then enter its URL. Both the image and the viewer use that file, including its network and evidence. An unchanged image opened through `?src=` has its URL filled in automatically. The file must stay hosted; use an immutable URL if the embed should not change.
-- **Data URL (no upload):** includes an SVG snapshot of the current canvas and evidence directly in the copied HTML. It needs no image hosting or separate image request, but makes the embed code larger. The viewer still uses the network link; the host must allow `data:` images.
+- **Data URL (no upload):** includes an SVG snapshot of the network as the embed shows it (with probabilities, even if the editor has them off, and its evidence) directly in the copied HTML. It needs no image hosting or separate image request, but makes the embed code larger. The viewer still uses the network link; the host must allow `data:` images.
 
 The viewer crossfades over the image in 50 ms, or switches immediately when reduced motion is requested. The animation runs inside the iframe; the host only reveals it and makes the image link inert once ready. The image remains underneath the opaque viewer so the fade never exposes the host page.
 

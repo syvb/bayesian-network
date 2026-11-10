@@ -2388,13 +2388,13 @@
     if (theme) { root.classList.remove("theme-light", "theme-dark"); root.classList.add("theme-" + theme); }
     try { return fn(); } finally { root.className = was; }
   }
-  // Runs fn with the canvas drawn as the embedded viewer draws it, with the probability tables in
-  // the nodes or not, for an embed's image.
+  // Runs fn with the canvas drawn as the embedded viewer draws it, for an embed's image: with
+  // probabilities, which the viewer always shows, and the probability tables in the nodes or not.
   function asEmbedded(tables, fn) {
-    const was = showCpts;
-    showCpts = tables;
+    const was = [showProbs, showCpts];
+    [showProbs, showCpts] = [true, tables];
     drawingEmbed = true;
-    try { return fn(); } finally { showCpts = was; drawingEmbed = false; render(); }
+    try { return fn(); } finally { [showProbs, showCpts] = was; drawingEmbed = false; render(); }
   }
   const themeColor = (theme, name) => withTheme(theme, () => getComputedStyle(document.documentElement).getPropertyValue(name).trim());
 

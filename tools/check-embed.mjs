@@ -409,7 +409,21 @@ try {
     assert.match(await embedCode.inputValue(), /&amp;cpts/);
     await editorPage.locator("#embed-cpts").uncheck();
     assert.doesNotMatch(await embedCode.inputValue(), /cpts/);
-    console.log("PASS editor CPTs: off by default, toggled by the button or T, remembered, only with Probabilities, kept out of embeds");
+    // The embed's image looks like the embed, which always shows probabilities, even when the
+    // editor has them off.
+    await editorPage.keyboard.press("Escape");
+    await editorPage.locator('[data-action="probs"]').click();
+    await editorPage.locator('[data-action="share"]').click();
+    await editorPage.locator('[data-action="copy-embed"]').click();
+    await editorPage.locator("#embed-cpts").check();
+    await editorPage.locator("#embed-image").check();
+    await editorPage.locator("#embed-image-source").selectOption("data");
+    const image = decodeURIComponent((await embedCode.inputValue()).match(/<img src="data:image\/svg\+xml;charset=utf-8,([^"]+)"/)[1].replace(/&amp;/g, "&"));
+    assert.equal(image.match(/class="cpt"/g)?.length, 4);
+    assert.match(image, /class="pbar"/);
+    assert.equal(await editorPage.locator(".node .pbar").count(), 0); // the canvas is as it was
+    await editorPage.keyboard.press("Escape");
+    console.log("PASS editor CPTs: off by default, toggled by the button or T, remembered, only with Probabilities, kept out of embeds; embed images always show probabilities");
     await context.close();
   }
 
