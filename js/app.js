@@ -2603,7 +2603,7 @@
   <a href="${attr(url)}" target="_blank" rel="noopener" style="display: block; height: 100%;">${img}</a>
   <script src="${attr(new URL("js/embed.js", url).href)}" async></script>
 </div>`;
-    return `<iframe src="${attr(url)}" title="${title}" width="100%" height="${height}" style="${frame}" loading="lazy"></iframe>`;
+    return `<iframe src="${attr(url)}" title="${title}" width="100%" height="${height}" style="${frame}"></iframe>`;
   }
 
   let embedUrl = "", embedImageData = {};
