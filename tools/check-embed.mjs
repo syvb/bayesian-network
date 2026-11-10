@@ -382,6 +382,34 @@ try {
     assert.equal(await editorPage.locator("[data-soft-mode]").isChecked(), true);
     assert.match(await editorPage.locator('[data-click-mode="observe"]').getAttribute("class"), /\bon\b/);
     console.log("PASS open editor: saved settings restored, reader's choices kept");
+
+    // The editor shows the tables only when asked (CPTs, or T), remembers it, and needs Probabilities.
+    const cpts = editorPage.locator('[data-action="cpts"]');
+    assert.equal(await editorPage.locator(".node .cpt").count(), 0);
+    await cpts.click();
+    assert.equal(await editorPage.locator(".node .cpt").count(), 4);
+    assert.equal(await cpts.getAttribute("aria-pressed"), "true");
+    assert.equal(await editorPage.evaluate(() => localStorage.getItem("bn-editor-show-cpts")), "1");
+    await editorPage.locator('[data-action="probs"]').click();
+    assert.equal(await editorPage.locator(".node .cpt").count(), 0);
+    assert.equal(await cpts.isDisabled(), true);
+    await editorPage.locator('[data-action="probs"]').click();
+    assert.equal(await editorPage.locator(".node .cpt").count(), 4);
+    await editorPage.locator("#canvas").focus();
+    await editorPage.keyboard.press("t");
+    assert.equal(await editorPage.locator(".node .cpt").count(), 0);
+    // The editor's setting stays out of embeds: only the dialog's own option adds the tables.
+    await editorPage.keyboard.press("t");
+    await editorPage.locator('[data-action="share"]').click();
+    await editorPage.locator('[data-action="copy-embed"]').click();
+    const embedCode = editorPage.locator("#embed-code");
+    await editorPage.waitForFunction(() => document.querySelector("#embed-code").value.includes("#net="));
+    assert.doesNotMatch(await embedCode.inputValue(), /cpts/);
+    await editorPage.locator("#embed-cpts").check();
+    assert.match(await embedCode.inputValue(), /&amp;cpts/);
+    await editorPage.locator("#embed-cpts").uncheck();
+    assert.doesNotMatch(await embedCode.inputValue(), /cpts/);
+    console.log("PASS editor CPTs: off by default, toggled by the button or T, remembered, only with Probabilities, kept out of embeds");
     await context.close();
   }
 

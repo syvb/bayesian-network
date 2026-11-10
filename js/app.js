@@ -10,6 +10,7 @@
   const OLD_NET_KEY = "bn-editor-network";
   const OLD_EVIDENCE_KEY = "bn-editor-evidence";
   const PROBS_KEY = "bn-editor-show-probabilities";
+  const CPTS_KEY = "bn-editor-show-cpts";
   const SOFT_KEY = "bn-editor-soft-evidence";
   const SOFT_KIND_KEY = "bn-editor-soft-kind";
   const CLICK_KEY = "bn-editor-click-mode";
@@ -30,9 +31,9 @@
   // viewer instead of zooming or panning it. Pinch (or Ctrl+scroll) still zooms.
   const pageScroll = viewer && new URLSearchParams(location.search).has("page-scroll");
   if (pageScroll) document.documentElement.classList.add("page-scroll");
-  // ?cpts (an embed option): every node shows its probability table under its probabilities,
-  // for explaining how the network works.
-  let showCpts = viewer && new URLSearchParams(location.search).has("cpts");
+  // Every node shows its probability table under its probabilities, for explaining how the
+  // network works: in the viewer with ?cpts (an embed option), in the editor with its CPTs button.
+  let showCpts = viewer ? new URLSearchParams(location.search).has("cpts") : preference(CPTS_KEY) === "1";
   // Viewers are independent of browser storage, including in opaque-origin sandboxed frames.
   // Settings a reader changes in the viewer are remembered here, and kept if they open the editor.
   const viewerChoices = new Set();
@@ -881,13 +882,15 @@
   }
 
   // Each node's box as drawn: id -> {x, y, w, h, table}. Tables make nodes much bigger than the
-  // layout was made for, so with them the drawing spreads the layout out, keeping its shape, by
-  // the least factor (at most 4) that keeps every two nodes CPT_GAP apart. The network keeps its
-  // own coordinates.
+  // layout was made for, so in the viewer, where readers can't move nodes, the drawing spreads the
+  // layout out, keeping its shape, by the least factor (at most 4) that keeps every two nodes
+  // CPT_GAP apart. The network keeps its own coordinates. In the editor nodes stay where you put
+  // them (so they follow the pointer), and Auto layout makes room for the tables.
   const CPT_GAP = 36;
-  function layout(probs = showProbs, tables = showCpts) {
+  let drawingEmbed = false; // drawing the embed's image, which looks like the viewer
+  function layout(probs = showProbs, tables = showCpts, spread = viewer || drawingEmbed) {
     const boxes = new Map(net.nodes.map((n) => [n.id, { x: n.x, y: n.y, ...nodeSize(n, probs, tables) }]));
-    if (!probs || !tables) return boxes;
+    if (!probs || !tables || !spread) return boxes;
     const list = [...boxes.values()];
     let s = 1;
     for (let i = 0; i < list.length; i++) {
@@ -1150,9 +1153,30 @@
     showProbs = !showProbs;
     savePreference(PROBS_KEY, showProbs ? "1" : "0");
     document.querySelector('[data-action="probs"]').setAttribute("aria-pressed", showProbs);
+    updateCptsButton();
     render();
     schedulePanel();
     if (!inline.hidden) positionInline();
+  }
+
+  // The editor's CPTs button: the tables go under the probabilities, so it needs them on.
+  function updateCptsButton() {
+    const b = document.querySelector('[data-action="cpts"]');
+    b.setAttribute("aria-pressed", showCpts);
+    b.disabled = !showProbs;
+  }
+  function toggleCpts() {
+    if (!showProbs) return;
+    showCpts = !showCpts;
+    savePreference(CPTS_KEY, showCpts ? "1" : "0");
+    updateCptsButton();
+    render();
+    if (!inline.hidden) positionInline();
+    // nodes stay where they are, so a tight layout can overlap
+    const boxes = [...layout().values()];
+    if (showCpts && boxes.some((a, i) => boxes.slice(i + 1).some((b) => Math.abs(a.x - b.x) < (a.w + b.w) / 2 && Math.abs(a.y - b.y) < (a.h + b.h) / 2))) {
+      toast("Some nodes overlap with their tables: Auto layout ▾ makes room");
+    }
   }
 
   // A probability as a short percentage that never rounds a possible state to 0% or a
@@ -1869,6 +1893,7 @@
     else if (e.key === "Escape") select([]);
     else if (e.key === "f" || e.key === "F") fit();
     else if (e.key === "p" || e.key === "P") toggleProbs();
+    else if (e.key === "t" || e.key === "T") toggleCpts();
     else if ((e.key === "c" || e.key === "C") && cptNodeId() != null) { e.preventDefault(); cpt.focus(); }
     else if (e.key === "n" || e.key === "N") { e.preventDefault(); addNodeShortcut(); }
     else if ((e.key === "w" || e.key === "W") && selNodes.size) { e.preventDefault(); toggleWatch([...selNodes]); }
@@ -2079,7 +2104,7 @@
         <dt>Select</dt><dd>Click; <kbd>Ctrl</kbd>-click to add; <kbd>Shift</kbd>-drag on empty space for a box; <kbd>Ctrl</kbd>+<kbd>A</kbd> for all.</dd>
         <dt>Move</dt><dd>Drag nodes, or nudge with arrow keys. Drag empty space to pan, scroll to zoom, <kbd>F</kbd> to fit.</dd>
         <dt>CPTs</dt><dd>Select a variable and edit its CPT in the table under the canvas: type in cells (with “Keep rows summing to 1” on, the rest of the row is adjusted for you), drag the dividers in each row's bar, double-click a bar segment for 100%. Copy and paste work with spreadsheets; pasting one row into several selected rows repeats it. Click a parent cell to select its rows.</dd>
-        <dt>Probabilities &amp; evidence</dt><dd>With <b>Probabilities</b> on (<kbd>P</kbd>), every node shows the probability of each of its states, computed exactly from the CPTs. Click a state to observe it (for example “the grass is wet”); all other nodes update to the probabilities given that evidence. Click it again, or use the evidence bar, to clear it. Turn on <b>Soft evidence</b> in the evidence bar to set a node's probabilities directly, or to enter likelihoods for its states, instead of a certain observation.</dd>
+        <dt>Probabilities &amp; evidence</dt><dd>With <b>Probabilities</b> on (<kbd>P</kbd>), every node shows the probability of each of its states, computed exactly from the CPTs; <b>CPTs</b> (<kbd>T</kbd>) also shows each node's CPT under them. Click a state to observe it (for example “the grass is wet”); all other nodes update to the probabilities given that evidence. Click it again, or use the evidence bar, to clear it. Turn on <b>Soft evidence</b> in the evidence bar to set a node's probabilities directly, or to enter likelihoods for its states, instead of a certain observation.</dd>
         <dt>Watching</dt><dd>Select a variable and press <kbd>W</kbd> (or <b>☆ Watch</b> in this panel) to pin its probabilities to a panel in the corner of the canvas. It stays in view however you pan or zoom, so you can set evidence at one end of a big network and see the effect at the other. Click a state in a card to set evidence there too, or its name to jump to the node.</dd>
         <dt>Interventions</dt><dd>To ask what happens if you <i>make</i> something true, rather than learn that it is, switch the evidence bar to <b>Intervene</b> and click a state. That sets do(node = state): the arcs into the node are cut (shown dashed), so it changes only what it causes and says nothing about its causes. For example, do(law passed = yes) shows the law's own effect on crime, without the public sentiment that makes laws pass. Interventions and observations can be combined.</dd>
         <dt>Delete / duplicate</dt><dd><kbd>Del</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd>. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</dd>
@@ -2363,17 +2388,22 @@
     if (theme) { root.classList.remove("theme-light", "theme-dark"); root.classList.add("theme-" + theme); }
     try { return fn(); } finally { root.className = was; }
   }
-  // Runs fn with the probability tables in the nodes shown or not, for an embed's image.
-  function withTables(on, fn) {
-    if (on === showCpts) return fn();
-    showCpts = on;
-    try { return fn(); } finally { showCpts = !on; render(); }
+  // Runs fn with the canvas drawn as the embedded viewer draws it, with the probability tables in
+  // the nodes or not, for an embed's image.
+  function asEmbedded(tables, fn) {
+    const was = showCpts;
+    showCpts = tables;
+    drawingEmbed = true;
+    try { return fn(); } finally { showCpts = was; drawingEmbed = false; render(); }
   }
   const themeColor = (theme, name) => withTheme(theme, () => getComputedStyle(document.documentElement).getPropertyValue(name).trim());
 
-  async function downloadImage(kind, theme = "", tables = false) {
+  // `tables`, for the embed's image, draws the canvas as the embed would show it, with or without
+  // the tables; otherwise it's drawn as shown.
+  async function downloadImage(kind, theme = "", tables) {
     if (!net.nodes.length) { toast("The network is empty"); return; }
-    const { image, code } = withTables(tables, () => withTheme(theme, exportImage));
+    const draw = () => withTheme(theme, exportImage);
+    const { image, code } = tables === undefined ? draw() : asEmbedded(tables, draw);
     if (kind === "svg") download(new Blob([image.svg], { type: "image/svg+xml" }), fileName(".svg"));
     else download(await BNImage.svgToPng(image, code), fileName(".png"));
   }
@@ -2522,8 +2552,10 @@
   const fromBase64Url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
   const pipe = async (bytes, stream) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
 
-  // ?view opens a link in the viewer, which passes on its fixed theme and shown tables.
-  const viewQuery = () => "?view" + (forcedTheme ? "&theme=" + forcedTheme : "") + (showCpts ? "&cpts" : "");
+  // ?view opens a link in the viewer, which passes on its fixed theme and shown tables. The
+  // editor's own CPTs setting is how you see the network, so its links don't carry it: an embed
+  // shows the tables only when its dialog says so.
+  const viewQuery = () => "?view" + (forcedTheme ? "&theme=" + forcedTheme : "") + (viewer && showCpts ? "&cpts" : "");
   // A link with the current network (and evidence) in its hash.
   async function netLink(asViewer, code = exportCode()) {
     const packed = await pipe(new TextEncoder().encode(code), new CompressionStream("deflate-raw"));
@@ -2576,7 +2608,7 @@
   // nodes), plus title and evidence bars.
   function embedHeight(tables) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const { x, y, w, h } of layout(true, tables).values()) {
+    for (const { x, y, w, h } of layout(true, tables, true).values()) {
       x0 = Math.min(x0, x - w / 2); x1 = Math.max(x1, x + w / 2);
       y0 = Math.min(y0, y - h / 2); y1 = Math.max(y1, y + h / 2);
     }
@@ -2623,7 +2655,7 @@
   // if the embed shows them, made once per dialog.
   const embedImage = (theme) => {
     const tables = $("#embed-cpts").checked;
-    return (embedImageData[theme + tables] ??= "data:image/svg+xml;charset=utf-8," + encodeURIComponent(withTables(tables, () => withTheme(theme, exportImage)).image.svg));
+    return (embedImageData[theme + tables] ??= "data:image/svg+xml;charset=utf-8," + encodeURIComponent(asEmbedded(tables, () => withTheme(theme, exportImage)).image.svg));
   };
 
   function updateEmbedCode() {
@@ -2895,6 +2927,7 @@
     import: openImport,
     demo: () => toggleDemoMenu(),
     probs: toggleProbs,
+    cpts: toggleCpts,
     export: openExport,
     share: () => toggleShareMenu(),
     "copy-link": () => { toggleShareMenu(false); shareLink(); },
@@ -3070,6 +3103,7 @@
     if (!viewer) takeOwnership();
     updateNetworkButton();
     document.querySelector('[data-action="probs"]').setAttribute("aria-pressed", showProbs);
+    updateCptsButton();
     render();
     renderPanel();
     cpt.render(cptNodeId());
@@ -3155,9 +3189,10 @@
     // the editor follows your system's theme, not the one an embed chose
     url.searchParams.delete("theme");
     if (forcedTheme) { document.documentElement.classList.remove("theme-" + forcedTheme); forcedTheme = undefined; }
-    // and shows the nodes at their usual size, to edit
+    // and shows the tables as you last chose in the editor
     url.searchParams.delete("cpts");
-    showCpts = false;
+    showCpts = preference(CPTS_KEY) === "1";
+    updateCptsButton();
     history.replaceState(null, "", url.href.replace("?#", "#").replace(/\?$/, ""));
     if (viewerEvidenceChanged) saveEvidence();
     render();
