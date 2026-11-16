@@ -1692,12 +1692,28 @@
       fitCptTables(nodeTip);
       tipId = id;
     }
-    const { h } = box, wrapW = svg.clientWidth, tw = nodeTip.offsetWidth, th = nodeTip.offsetHeight;
-    const cx = view.x + box.x * view.k;
-    let top = view.y + (box.y + h / 2) * view.k + 8;
-    if (top + th > svg.clientHeight - 4) top = view.y + (box.y - h / 2) * view.k - th - 8;
-    nodeTip.style.left = Math.max(4, Math.min(wrapW - tw - 4, cx - tw / 2)) + "px";
-    nodeTip.style.top = Math.max(4, top) + "px";
+    // The card goes in the first place it fits whole: under the node, above it, to its right or
+    // to its left. Where it fits in none, it goes where most of it fits, cut off at the bottom.
+    // It never covers the node, so the node's states stay visible to click.
+    nodeTip.style.maxHeight = "";
+    nodeTip.style.left = "0"; // measured at the left edge, where the canvas's width doesn't narrow it
+    const W = svg.clientWidth, H = svg.clientHeight, tw = nodeTip.offsetWidth, th = nodeTip.offsetHeight, gap = 8, m = 4;
+    const x0 = view.x + (box.x - box.w / 2) * view.k, x1 = x0 + box.w * view.k;
+    const y0 = view.y + (box.y - box.h / 2) * view.k, y1 = y0 + box.h * view.k;
+    const centred = Math.max(m, Math.min(W - tw - m, (x0 + x1) / 2 - tw / 2));
+    const beside = (fits, left) => ({ room: fits ? H - 2 * m : 0, left, top: (h) => Math.max(m, Math.min(H - h - m, (y0 + y1) / 2 - h / 2)) });
+    const spots = [
+      { room: H - m - y1 - gap, left: centred, top: () => y1 + gap },
+      { room: y0 - gap - m, left: centred, top: (h) => y0 - gap - h },
+      beside(tw <= W - m - x1 - gap, x1 + gap),
+      beside(tw <= x0 - gap - m, x0 - gap - tw),
+    ];
+    const spot = spots.find((s) => s.room >= th) || spots.reduce((a, b) => (b.room > a.room ? b : a));
+    const h = Math.max(0, Math.min(th, spot.room));
+    nodeTip.classList.toggle("cut", h < th);
+    if (h < th) nodeTip.style.maxHeight = h + "px";
+    nodeTip.style.left = spot.left + "px";
+    nodeTip.style.top = spot.top(h) + "px";
   }
   svg.addEventListener("pointerover", (e) => { if (e.pointerType === "touch") return; const el = e.target.closest("[data-node]"); showNodeTip(el ? +el.dataset.node : null); });
   svg.addEventListener("pointerleave", () => showNodeTip(null));

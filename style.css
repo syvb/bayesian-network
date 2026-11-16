@@ -682,8 +682,10 @@ body.viewer-loading #canvas-wrap { visibility: hidden; }
 #load-error { margin: 0; padding: 24px; min-height: 100vh; box-sizing: border-box; display: grid; place-items: center; text-align: center; color: var(--muted); font-size: 14px; }
 
 /* Hover card with a node's description */
-#node-tip { position: absolute; z-index: 5; max-width: 320px; padding: 8px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 6px 22px rgb(0 0 0 / 0.16); font-size: 13px; pointer-events: none; }
+#node-tip { position: absolute; z-index: 5; max-width: 320px; padding: 8px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 6px 22px rgb(0 0 0 / 0.16); font-size: 13px; pointer-events: none; overflow: hidden; }
 #node-tip[hidden] { display: none; }
+/* too tall for the room left beside the node (showNodeTip): the cut-off end fades out */
+#node-tip.cut::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 32px; background: linear-gradient(transparent, var(--surface)); }
 #node-tip p { margin: 4px 0 0; white-space: pre-wrap; line-height: 1.4; }
 #node-tip p.muted { font-size: 11px; }
 /* one width for every node in the viewer, so the card doesn't jump in size from node to node */
