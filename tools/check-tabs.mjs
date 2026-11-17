@@ -139,7 +139,7 @@ try {
   await a.locator('[data-clear-ev="all"]').click();
   await a.locator('.node[data-node="1"] .body').click({ position: { x: 20, y: 12 } });
   await a.locator('.cell[data-r="0"][data-c="0"]').dblclick();
-  await a.locator(".cpt-scroll input").fill("0.37");
+  await a.locator(".cpt-scroll input").fill("37");
   await ready(b);
   assert.equal((await network(b)).nodes[0].cpt[0], 0.37);
   console.log("PASS CPT: unfinished probability input saved before handover");

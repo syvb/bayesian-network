@@ -84,8 +84,13 @@
   }
 
   function createCptEditor(dock, opts) {
-    const prefs = { format: "prob", balance: true, cumulative: false, height: 300, collapsed: false };
-    try { Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY)) || {}); } catch {}
+    const prefs = { format: "pct", balance: true, cumulative: false, height: 300, collapsed: false, pctDefault: true };
+    try {
+      const saved = JSON.parse(localStorage.getItem(PREFS_KEY)) || {};
+      // prefs saved while probabilities were the default stored "prob" whether or not it was chosen
+      if (saved.format === "prob" && !saved.pctDefault) delete saved.format;
+      Object.assign(prefs, saved);
+    } catch {}
     if (prefs.percent) prefs.format = "pct"; // saved before log-odds existed
     delete prefs.percent;
     const savePrefs = () => localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
@@ -104,13 +109,13 @@
 
     dock.innerHTML = `<div class="dock-resize" title="Drag to resize"></div><header class="dock-head"></header><div class="cpt-scroll" tabindex="0"></div>
       <div id="balance-help" class="help-popover" popover>
-        <h3>Keep rows summing to 1</h3>
-        <p>Each CPT row is a probability distribution, so it has to add up to 1. With this option on, when you type a value the <b>other states in that row are adjusted for you</b>:</p>
+        <h3>Keep rows summing to 100%</h3>
+        <p>Each CPT row is a probability distribution, so it has to add up to 100%. With this option on, when you type a value the <b>other states in that row are adjusted for you</b>:</p>
         <ul>
-          <li>Start with the row <code>0.5 · 0.3 · 0.2</code> and type <code>0.8</code> in the first cell. The other two shrink to <code>0.12 · 0.08</code>, keeping their 3 : 2 ratio.</li>
-          <li>Then type <code>0.15</code> in the second cell. Your <code>0.8</code> is kept and the last cell becomes <code>0.05</code>. Values you typed in a row stay put while you're still in that row, so typing all but one state fills in the last.</li>
+          <li>Start with the row <code>50% · 30% · 20%</code> and type <code>80%</code> in the first cell. The other two shrink to <code>12% · 8%</code>, keeping their 3 : 2 ratio.</li>
+          <li>Then type <code>15%</code> in the second cell. Your <code>80%</code> is kept and the last cell becomes <code>5%</code>. Values you typed in a row stay put while you're still in that row, so typing all but one state fills in the last.</li>
         </ul>
-        <p>Cells changed for you flash briefly. Turn the option off to edit cells independently, for example to enter raw weights and then press Normalize. Dragging a bar's dividers always keeps the row at 1.</p>
+        <p>Cells changed for you flash briefly. Turn the option off to edit cells independently, for example to enter raw weights and then press Normalize. Dragging a bar's dividers always keeps the row at 100%.</p>
       </div>`;
     const head = dock.querySelector(".dock-head");
     const grid = dock.querySelector(".cpt-scroll");
